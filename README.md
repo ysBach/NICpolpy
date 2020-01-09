@@ -55,7 +55,7 @@ Also *please refer to the verbose output as well as FITS header* such as the one
 
 The photometry was done by automatic aperture/annulus selection (example of h191108_0400):
 
-<img src="readme_images/ap_selection.png" style="zoom:50%;" />
+<img src="readme_images/ap_selection.png" style="zoom:30%;" />
 
 *left: o-ray, right: e-ray. The red is the elliptical aperture and the white is the elliptical annulus for sky. The FWHM is estimated from Source-Extractor-like extraction, and aperture radius = 2FWHM, annulus radii = (4FWHM, 6FWHM) for both x(major) and y(minor) axes of the source's shape.*
 
