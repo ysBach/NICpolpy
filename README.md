@@ -1,18 +1,14 @@
 # NICpolpy
-Nishi Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetry photometry pipeline.
-
-Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
+Nishi Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetry photometry pipeline. Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
 
 
 
 ## 1. Installation
-You will need
-1. Python **3.6+** (recommended: [Anaconda 3](https://www.anaconda.com/distribution/#download-section))
-2. Dependencies (I will assume you used Anaconda 3; otherwise, use pip3):
+You will need Python **3.6+** (recommended: [Anaconda 3](https://www.anaconda.com/distribution/#download-section)).
 
-### 1-1. First time
 <details><summary>For the <b>first</b> installation (click):</summary>
-<p><pre>
+<p>
+<pre>
 # On terminal
 conda install -c astropy astroquery photutils ccdproc astroscrappy
 conda install -c openastronomy sep
@@ -28,7 +24,7 @@ cd NICpolpy && python setup.py install && cd ..
 </pre>
 </details>
 
-### 1-2. After the first
+### After the first installation
 If you need to update any of these, just do
 ```
 cd ~/github/ysfitsutilpy && git pull && python setup.py install
@@ -59,8 +55,12 @@ The photometry was done by automatic aperture/annulus selection (example of h191
 
 *left: o-ray, right: e-ray. The red is the elliptical aperture and the white is the elliptical annulus for sky. The FWHM is estimated from Source-Extractor-like extraction, and aperture radius = 2FWHM, annulus radii = (4FWHM, 6FWHM) for both x(major) and y(minor) axes of the source's shape.*
 
-## Note
+
+
+## A Note on Image Size
 Some data from NHAO NIC is in 32-bit format, using twice the storage than required. You may use [this example code](example/convert_16bit.py) to **convert those into 16-bit** without losing any dynamic range.
+
+
 
 ## Sample header
 
