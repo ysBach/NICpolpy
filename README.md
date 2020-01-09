@@ -30,8 +30,9 @@ cd NICpolpy && python setup.py install && cd ..
 ### 1-2. After the first
 If you need to update any of these, just do
 ```
-cd ~/github/ysfitsutilpy
-git pull && python setup.py install
+cd ~/github/ysfitsutilpy && git pull && python setup.py install
+cd ~/github/ysphotutilpy && git pull && python setup.py install
+cd ~/github/NICpolpy && git pull && python setup.py install
 ```
 
 
