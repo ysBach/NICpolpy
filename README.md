@@ -57,7 +57,7 @@ The photometry was done by automatic aperture/annulus selection (example of h191
 
 <img src="readme_images/ap_selection.png" style="zoom:50%;" />
 
-*left: o-ray, right: e-ray. The red is the elliptical aperture and the white is the elliptical aperture. The FWHM is estimated from Source-Extractor-like extraction, and aperture radius = 2FWHM, annulus radii = (4FWHM, 6FWHM) for both x(major) and y(minor) axes of the source's shape.*
+*left: o-ray, right: e-ray. The red is the elliptical aperture and the white is the elliptical annulus for sky. The FWHM is estimated from Source-Extractor-like extraction, and aperture radius = 2FWHM, annulus radii = (4FWHM, 6FWHM) for both x(major) and y(minor) axes of the source's shape.*
 
 ## Note
 Some data from NHAO NIC is in 32-bit format, using twice the storage than required. You may use [this example code](example/convert_16bit.py) to **convert those into 16-bit** without losing any dynamic range.
