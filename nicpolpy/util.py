@@ -1,17 +1,27 @@
-import numpy as np
-import ccdproc
-from scipy.optimize import curve_fit
-from astropy.stats import sigma_clip
+from pathlib import Path
 
-__all__ = ["USEFUL_KEYS", "OBJSECTS", "NICSECTS", "GAIN", "RDNOISE",
-           "FIND_KEYS", "LACOSMIC_KEYS",
-           "fitsxy2py", "infer_filter", "split_oe", "split_quad",
+import numpy as np
+from astropy.stats import sigma_clip
+from scipy.optimize import curve_fit
+
+from ysfitsutilpy import fitsxy2py, trim_ccd
+
+__all__ = ["USEFUL_KEYS", "OBJSECTS", "NICSECTS",
+           "FOURIERSECTS", "FOURIPEAKSECT",
+           "PWD", "DARK_PATHS", "FLAT_PATHS", "MASK_PATHS",
+           "OBJSLICES", "NICSLICES", "FOURIERSLICES", "FOURIPEAKSLICE",
+           "NHAO_LOCATION",
+           "GAIN", "RDNOISE",
+           "FIND_KEYS",
+           "infer_filter",
+           "split_oe", "split_quad",
            "multisin", "fit_sinusoids", "fft_peak_freq"
            ]
-#    "split_load",
 
-USEFUL_KEYS = ["DATE-OBS", "UT-STR", "EXPTIME", "DATA-TYP", "OBJECT",
-               "FILTER", "POL-AGL1", "WAVEPLAT", "SHUTTER",
+
+USEFUL_KEYS = ["DATE-OBS", "UT-STR", "EXPTIME", "UT-END", "DATA-TYP", "OBJECT",
+               "FILTER", "POL-AGL1", "PA", "INSROT", "IMGROT",
+               "WAVEPLAT", "SHUTTER",
                "AIRMASS", "ZD", "ALTITUDE", "AZIMUTH",
                "DITH_NUM", "DITH_NTH", "DITH_RAD",
                "NAXIS1", "NAXIS2", "BIN-FCT1", "BIN-FCT2",
@@ -20,30 +30,50 @@ USEFUL_KEYS = ["DATE-OBS", "UT-STR", "EXPTIME", "DATA-TYP", "OBJECT",
                "NICTMP1", "NICTMP2", "NICTMP3", "NICTMP4", "NICTMP5",
                "NICHEAT", "DET-ID"]
 
-OBJSECTS = dict(J=["[530:690, 295:745]", "[710:870, 295:745]"],
-                H=["[555:715, 320:770]", "[735:895, 320:770]"],
-                K=["[550:710, 330:780]", "[720:880, 330:780]"])
+#                     140       420          140      420
+OBJSECTS = dict(J=["[540:680, 310:730]", "[725:865, 310:730]"],
+                H=["[565:705, 335:755]", "[745:885, 335:755]"],
+                K=["[560:700, 345:765]", "[730:870, 345:765]"])
 
 NICSECTS = dict(lower="[:, :512]", upper="[:, 513:]",
                 left="[:512, :]", right="[513:, :]")
 
+VERTICALSECTS = ["[:, 50:150]", "[:, 874:974]"]
+FOURIPEAKSECT = "[300:500, :]"
+# FOURIERSECTS = dict(
+#     J=["[10:285]", "[755:1010]"],
+#     H=["[10:310]", "[780:1010]"],
+#     K=["[10:320]", "[790:1010]"],
+# )
+
+FOURIERSECTS = dict(
+    J=["[10:245]", "[795:1010]"],
+    H=["[10:270]", "[850:1010]"],
+    K=["[10:280]", "[830:1010]"],
+)
+
+PWD = Path(__file__).parent
+DARK_PATHS = dict(
+    J=PWD/"dark"/"v_j191022_DARK_120.fits",
+    H=PWD/"dark"/"v_h191022_DARK_120.fits",
+    K=PWD/"dark"/"v_k191022_DARK_120.fits",
+)
+FLAT_PATHS = dict(
+    J=dict(o=PWD/"flat"/"v_j180507_FLAT_all_o.fits",
+           e=PWD/"flat"/"v_j180507_FLAT_all_e.fits"),
+    H=dict(o=PWD/"flat"/"v_h180507_FLAT_all_o.fits",
+           e=PWD/"flat"/"v_h180507_FLAT_all_e.fits"),
+    K=dict(o=PWD/"flat"/"v_k180507_FLAT_all_o.fits",
+           e=PWD/"flat"/"v_k180507_FLAT_all_e.fits")
+)
+MASK_PATHS = dict(
+    J=PWD/"mask"/"j_mask.fits",
+    H=PWD/"mask"/"h_mask.fits",
+    K=PWD/"mask"/"k_mask.fits",
+)
+
 GAIN = dict(J=9.2, H=9.8, K=9.4)
 RDNOISE = dict(J=50, H=75, K=83)
-
-LACOSMIC_KEYS = {'sigclip': 4.5,
-                 'sigfrac': 0.5,
-                 'objlim': 1.0,
-                 'satlevel': np.inf,
-                 'pssl': 0.0,
-                 'niter': 4,
-                 'sepmed': False,
-                 'cleantype': 'medmask',
-                 'fsmode': 'median',
-                 'psfmodel': 'gauss',
-                 'psffwhm': 2.5,
-                 'psfsize': 7,
-                 'psfk': None,
-                 'psfbeta': 4.765}
 
 FIND_KEYS = {'o': dict(ratio=1.0,  # 1.0: circular gaussian
                        sigma_radius=1.5,  # default values 1.5
@@ -61,39 +91,47 @@ FIND_KEYS = {'o': dict(ratio=1.0,  # 1.0: circular gaussian
                        brightest=None, peakmax=None)}
 
 
-def fitsxy2py(fits_section):
-    ''' Given FITS section in str, returns the slices in python convention.
-    Parameters
-    ----------
-    fits_section : str
-        The section specified by FITS convention, i.e., bracket embraced,
-        comma separated, XY order, 1-indexing, and including the end index.
-    Note
-    ----
-    >>> np.eye(5)[fitsxy2py('[1:2,:]')]
-    # array([[1., 0.],
-    #       [0., 1.],
-    #       [0., 0.],
-    #       [0., 0.],
-    #       [0., 0.]])
-    '''
-    slicer = ccdproc.utils.slices.slice_from_string
-    sl = slicer(fits_section, fits_convention=True)
-    return sl
+OBJSLICES = {}
+NICSLICES = {}
+FOURIERSLICES = {}
+VERTICALSLICES = []
+
+for fits_sect, pyth_slice in zip([OBJSECTS, FOURIERSECTS],
+                                 [OBJSLICES, FOURIERSLICES]):
+    for k, sects in fits_sect.items():
+        pyth_slice[k] = []
+        for sect in sects:
+            pyth_slice[k].append(fitsxy2py(sect))
+
+for k, sect in NICSECTS.items():
+    NICSLICES[k] = fitsxy2py(sect)
+
+for sect in VERTICALSECTS:
+    VERTICALSLICES.append(fitsxy2py(sect))
+
+FOURIPEAKSLICE = fitsxy2py(FOURIPEAKSECT)
+
+
+NHAO_LOCATION = dict(lon=134.3356, lat=35.0253, elevation=0.449)
 
 
 def infer_filter(ccd, filt=None, verbose=True):
     if filt is None:
-        filt = ccd.header["FILTER"]
-        if verbose:
-            print(f"Assuming filter is '{filt}' from header.")
+        try:
+            filt = ccd.header["FILTER"]
+            if verbose:
+                print(f"Assuming filter is '{filt}' from header.")
+        except (KeyError, AttributeError):
+            raise TypeError("Filter cannot be inferred from the given ccd.")
     return filt
 
 
 def split_oe(ccd, filt=None, verbose=True):
     filt = infer_filter(ccd, filt=filt, verbose=verbose)
-    ccd_o = ccdproc.trim_image(ccd, fits_section=OBJSECTS[filt][0])
-    ccd_e = ccdproc.trim_image(ccd, fits_section=OBJSECTS[filt][1])
+    ccd_o = trim_ccd(ccd, fits_section=OBJSECTS[filt][0])
+    ccd_o.header["OERAY"] = ("o", "O-ray or E-ray. Either 'o' or 'e'.")
+    ccd_e = trim_ccd(ccd, fits_section=OBJSECTS[filt][1])
+    ccd_e.header["OERAY"] = ("e", "O-ray or E-ray. Either 'o' or 'e'.")
     return (ccd_o, ccd_e)
 
 # # FIXME: Drop the dependency on yfu...
@@ -118,21 +156,50 @@ def split_quad(ccd):
     return quads
 
 
-def multisin(x, f, c, a, p):
+def multisin(x, f, a, p, c):
     res = np.zeros(x.size)
-    if len(a) > 0 or a is not None:
-        if not (len(f) == len(a) == len(p)):
-            raise ValueError("f, a, p must have identical length. "
-                             + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
-        for _a, _f, _p in zip(a, f, p):
-            res += _a*np.sin(2*np.pi*_f*x + _p)
+    if a is not None:
+        if len(a) > 0:
+            if not (len(f) == len(a) == len(p)):
+                raise ValueError(
+                    "f, a, p must have identical length. "
+                    + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
+            for _a, _f, _p in zip(a, f, p):
+                # res += _a*np.sin(2*np.pi*_f*x + _p)
+                # Mathematically, the "integrated" version below should
+                # work better, in my opinion, but apparently it does not
+                # modify the results much...
+                # -- 2019-12-26 11:46:03 (KST: GMT+09:00), YPB
+                w = 2*np.pi*_f
+                wx_l = w*(x - 0.5)
+                wx_r = w*(x + 0.5)
+                res += _a/w * (np.cos(wx_l + _p) - np.cos(wx_r + _p))
+                # res += 1
     # for _a, _f, _p in zip(a, f, p):
     #     res += _a*np.sin(2*np.pi*_f*x + _p)
 
     return c + res
 
 
-def fit_sinusoids(xdata, ydata, freqs, **kwargs):
+def lin_multisin(x, f, a, p, c):
+    res = np.zeros(x.size)
+
+    if a is not None:
+        if len(a) > 0:
+            if not (len(f) == len(a) == len(p)):
+                raise ValueError(
+                    "f, a, p must have identical length. "
+                    + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
+            for _a, _f, _p in zip(a, f, p):
+                # res += _a*np.sin(2*np.pi*_f*x + _p)
+                w = 2*np.pi*_f
+                wx_l = w*(x - 0.5)
+                wx_r = w*(x + 0.5)
+                res += _a/w * (np.cos(wx_l + _p) - np.cos(wx_r + _p))
+    return c + res
+
+
+def fit_sinusoids(xdata, ydata, freqs, p0=None, **kwargs):
     """ Fit const + sin_functions for given frequencies.
     Parameters
     ----------
@@ -157,7 +224,7 @@ def fit_sinusoids(xdata, ydata, freqs, **kwargs):
         a = pars[:n//2]
         p = pars[n//2:-1]
         # Resulting popt will be [amp0, ..., phase0, ..., const]
-        return multisin(x, freqs, c, a, p)
+        return multisin(x, freqs, a, p, c)
 
     n = len(freqs)
     if n == 0 or freqs is None:
@@ -165,13 +232,17 @@ def fit_sinusoids(xdata, ydata, freqs, **kwargs):
         # this case is just a mean as we don't have any weight.
         return (np.mean(ydata), None, None), None
 
-    p0 = np.zeros(2*n + 1)
+    if p0 is None:
+        p0 = np.zeros(2*n + 1)
+        p0[:n] += 1  # initial guess of amplitudes
+        p0[-1] = np.mean(ydata)  # initial guess of constant value
+
     popt, pcov = curve_fit(_sin, xdata, ydata, p0=p0, **kwargs)
 
-    return (popt[-1], popt[:n], popt[n:-1]), pcov
+    return (popt[:n], popt[n:-1], popt[-1]), pcov
 
 
-def fft_peak_freq(fftamplitude, max_peak=5,
+def fft_peak_freq(fftamplitude, max_peaks=5, min_freq=0,
                   sigclip_kw={'sigma_lower': np.inf, 'sigma_upper': 3}):
     """ Select the FFT amplitude peaks for positive frequencies.
     Parameters
@@ -179,8 +250,12 @@ def fft_peak_freq(fftamplitude, max_peak=5,
     fftamplitude : 1d array
         _Absolute_ FFT amplitude in 1d. For example, ``fftamplitude =
         np.abs(np.fft.fft(data1d))``.
-    max_peak : int, optional
+    max_peaks : int, optional
         The maximum number of peaks to be found.
+    min_freq: float, optional
+        The minimum frequency to pick. Giving positive value
+        automatically removes negative frequencies. Default 0 means the
+        DC is included.
     sigclip_kw :
         The arguments passed to ``astropy.stats.sigma_clip``. It's
         generally not very important to tune this for NIC data as of Dec
@@ -211,27 +286,35 @@ def fft_peak_freq(fftamplitude, max_peak=5,
     def lin_fun(x, a, b):
         return a*x + b
 
-    amp = np.asarray(fftamplitude)
-    freq = np.fft.fftfreq(amp.size)
-    if amp.ndim > 1:
+    amp_raw = np.asarray(fftamplitude)
+    if amp_raw.ndim > 1:
         raise ValueError("Input array (fft) must be 1-D")
 
-    i_half = amp.size // 2 + 1
-    amp = amp[1:i_half]  # exclude 0-th (DC level)
+    # i_half = amp_raw.size // 2 + 1
+    # amp = amp_raw[:i_half]
+
+    freq_raw = np.fft.fftfreq(amp_raw.size)
 
     # Robust linear fit, find points with high residuals
-    xx = np.linspace(1, i_half, amp.size)  # actually just a dummy...
-    popt, _ = curve_fit(lin_fun, xx, amp, method='trf', loss='cauchy')
-    resid = amp - lin_fun(xx, *popt)
+    freqmask = (freq_raw < min_freq)
+    amp = amp_raw[~freqmask]
+    freq = freq_raw[~freqmask]
+    popt, _ = curve_fit(lin_fun, freq, amp, method='trf', loss='cauchy')
+    resid = amp - lin_fun(freq, *popt)
 
     # Find points above k-sigma level by sigma-clip
     mask = sigma_clip(resid, **sigclip_kw).mask
     mask_idx = np.where(mask)[0]  # masked = higher values from sigclip.
 
-    # highest ``max_peak`` (highest to lower peaks):
-    top_n_idx = np.argsort(resid)[::-1][:max_peak]
+    # highest ``max_peaks`` (highest to lower peaks):
+    top_n_idx = np.argsort(resid)[::-1][:max_peaks]
 
     # Select those meet BOTH top N peaks & high after sigma clip
     idx = np.intersect1d(top_n_idx, mask_idx)
 
-    return freq[idx + 1]
+    try:
+        return freq[idx]
+    except (TypeError, IndexError):
+        return []
+
+
