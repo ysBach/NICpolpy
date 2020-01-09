@@ -5,32 +5,31 @@ Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, 
 
 
 ## Installation
-<details><summary>click</summary>
-<p>
 You will need
 1. Python **3.6+** (recommended: [Anaconda 3](https://www.anaconda.com/distribution/#download-section))
 2. Dependencies (I will assume you used Anaconda 3; otherwise, use pip3):
-```
-# On terminal
-conda install -c astropy astroquery photutils ccdproc astroscrappy
-conda install -c openastronomy sep
-cd ~            # whatever directory you want
-mkdir github    # whatever name you want
-git clone https://github.com/ysBach/ysfitsutilpy.git
-cd ysfitsutilpy && python setup.py install && cd ..
-git clone https://github.com/ysBach/ysphotutilpy.git
-cd ysphotutilpy && python setup.py install && cd ..
-git clone https://github.com/ysBach/NICpolpy.git
-cd NICpolpy && python setup.py install && cd ..
-```
+
+<details><summary>For the first installation (click):</summary>
+<p>
+    # On terminal
+    conda install -c astropy astroquery photutils ccdproc astroscrappy
+    conda install -c openastronomy sep
+    cd ~            # whatever directory you want
+    mkdir github    # whatever name you want
+    git clone https://github.com/ysBach/ysfitsutilpy.git
+    cd ysfitsutilpy && python setup.py install && cd ..
+    git clone https://github.com/ysBach/ysphotutilpy.git
+    cd ysphotutilpy && python setup.py install && cd ..
+    git clone https://github.com/ysBach/NICpolpy.git
+    cd NICpolpy && python setup.py install && cd ..
+</p>
+</details>
 
 **After the first installation**, if you need to update any of these, just do
 ```
 cd ~/github/ysfitsutilpy
 git pull && python setup.py install
 ```
-</p>
-</details>
 
 ## Basic Usage
 The following will require < 100 MB memory for processing.
@@ -80,7 +79,7 @@ for fpath in obj_fpaths:
     nicimg.preproc(do_fouri=False, verbose_crrej=False, verbose=False)
     nicimg.find_obj(thresh=1, verbose=False)
     nicimg.ellipphot_sep(f_ap=(2, 2), fwhm=(11., 11.), fix_fwhm=False, verbose=False)
-    
+
     for outpath, ccd in zip(out, [nicimg.ccd_o_proc, nicimg.ccd_e_proc]):
         ccd.write(outpath, overwrite=True)
 ```
