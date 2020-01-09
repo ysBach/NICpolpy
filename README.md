@@ -46,7 +46,7 @@ The processing with ``NICpolpy``:
 * **Memory < 100 MB** for processing
 * **Speed = 100 ± 10 frames/second**
 * CPU load = **20-30 %**
-* Example code for image processing : [here](example/preprocessing.py).
+* Example code for image preprocessing & photometry : [here](example/preproc_and_phot.py).
 
 (Tested on MBP 2018 15" 2.6 GHz i7)
 
