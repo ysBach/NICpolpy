@@ -62,7 +62,8 @@ Some data from NHAO NIC is in 32-bit format, using twice the storage than requir
 
 The photometry was done by automatic aperture/annulus selection (example of h191108_0400):
 
-![img](readme_images/ap_selection.png)
+<img src="readme_images/ap_selection.png" width="400px" />
+
 
 *left: o-ray, right: e-ray. The red is the elliptical aperture and the white is the elliptical annulus for sky. The FWHM is estimated from Source-Extractor-like extraction, and aperture radius = 2FWHM, annulus radii = (4FWHM, 6FWHM) for both x(major) and y(minor) axes of the source's shape.*
 
