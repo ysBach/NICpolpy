@@ -81,7 +81,7 @@ def _nic_Gaussian2D_fit(ccd, obj, err, g_init=None, fbox=(40, 40), snr=3):
     return gfit, fitter
 
 
-def _sort_obj(ccd, obj, nobj):
+def _sort_obj(ccd, obj, nobj, verbose):
     ''' Sort obj such that the 0-th is our target.
     '''
     s_nobj = ("{} objects found; Only the one closest to the FOV center "
@@ -90,7 +90,7 @@ def _sort_obj(ccd, obj, nobj):
     obj['_r'] = np.sqrt((obj['x'] - nx/2)**2 + (obj['y'] - ny/2)**2)
     obj.sort_values('_r', inplace=True)
     s = s_nobj.format(nobj, obj['segm_label'].values[0])
-    add_to_header(ccd.header, 'h', s)
+    add_to_header(ccd.header, 'h', s, verbose=verbose)
 
 
 def _eap_phot_fit(ccd, err, gfit, f_ap, f_in, f_out):
@@ -438,8 +438,8 @@ class NICPolImage:
         self.mask_o_proc = self.mask_o_proc | self.mask_o_cr
         self.mask_e_proc = self.mask_e_proc | self.mask_e_cr
 
-    def find_obj(self, thresh=3, bezel_x=(40, 40), bezel_y=(150, 100),
-                 box_size=(64, 64), filter_size=(12, 12),
+    def find_obj(self, thresh=3, bezel_x=(40, 40), bezel_y=(200, 120),
+                 box_size=(64, 64), filter_size=(12, 12), deblend_cont=1,
                  minarea=100, verbose=True,
                  **extract_kw):
         """
@@ -473,6 +473,10 @@ class NICPolImage:
             Minimum number of pixels required for an object. Default is
             100 for NIC.
 
+        deblend_cont : float, optional
+            Minimum contrast ratio used for object deblending. To
+            entirely disable deblending, set to 1.0.
+
         # gauss_fbox : int, float, array-like of such, optional.
         #     The fitting box size to fit a Gaussian2D function to the
         #     objects found by ``sep``. This is done to automatically set
@@ -492,7 +496,8 @@ class NICPolImage:
         bkg_kw = dict(maskthresh=0.0, filter_threshold=0.0,
                       box_size=box_size, filter_size=filter_size)
         ext_kw = dict(thresh=thresh, minarea=minarea,
-                      bezel_x=bezel_x, bezel_y=bezel_y, **extract_kw)
+                      deblend_cont=deblend_cont, bezel_x=bezel_x,
+                      bezel_y=bezel_y, **extract_kw)
         sepv = sep.__version__
         s_bkg = f"Background estimated from sep (v {sepv}) with {bkg_kw}."
         s_obj = "Objects found from sep (v {}) with {}."
@@ -537,10 +542,12 @@ class NICPolImage:
                                    [self.nobj_o, self.nobj_e],
                                    ['o', 'e']
                                    ):
-            if n < 1 and verbose:
+            ccd.header["NOBJ-SEP"] = (n, "Number of objects found from SEP.")
+            if n < 1:
                 warn(f"No object found for {oe}-ray of {self.file}!", Warning)
             elif n > 1:
-                _sort_obj(ccd, obj, nobj=n)
+                _sort_obj(ccd, obj, nobj=n, verbose=verbose)
+                warn(f"No object found for {oe}-ray of {self.file}!", Warning)
 
 # def ellipphot_sep(self, f_ap=(2., 2.), f_in=(4., 4.), f_out=(6., 6.),
 #                   g_init_o=None, g_init_e=None, keys=USEFUL_KEYS,
@@ -660,7 +667,6 @@ class NICPolImage:
         "boundary". We need flux-describing Gaussian, so I need to do 2D
         gaussian fitting.
         '''
-        from astropy.table import QTable
         s_fit = 'Gaussian2D function fitted.'
         s_phot = ('Photometry done for elliptical aperture/annulus with '
                   + f"f_ap = {f_ap}, f_in = {f_in}, f_out = {f_out}"
