@@ -306,6 +306,7 @@ def fit_fourier(data, freqs, mask=None, filt=None,
         np.arange(nx)          # x_index of data
     ]
     res = np.array(pool.starmap(_fitter, np.array(args).T))
+    pool.close()
     res = res[np.argsort(res[:, 0])]  # sort by index
     popts = np.array(res[:, 1])
     pattern = np.stack(res[:, 2], axis=1)
