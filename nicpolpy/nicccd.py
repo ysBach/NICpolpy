@@ -12,7 +12,7 @@ from astropy.time import Time
 
 from ysfitsutilpy import (CCDData_astype, add_to_header, bdf_process, errormap,
                           load_ccd, propagate_ccdmask, set_ccd_gain_rdnoise,
-                          trim_ccd)
+                          trim_ccd, fitsxy2py)
 from ysphotutilpy import (apphot_annulus, ellip_ap_an, fit_Gaussian2D,
                           sep_back, sep_extract)
 
@@ -141,17 +141,25 @@ def _append_to_phot(phot, header, fpath, nobj=1, keys=USEFUL_KEYS):
     phot['file'] = fpath
 
 
+# TODO: let user to skip dark correction.
 class NICPolImage:
-    def __init__(self, fpath, filt=None, verbose=True):
+    def __init__(self, fpath, ccd=None, filt=None, verbose=True):
         self.file = Path(fpath)
         # for future calculation, set float32 dtype:
         self.ccd_raw = CCDData_astype(load_ccd(fpath), 'float32')
+        self.right_half = self.ccd_raw.data.shape[1] == 512
         self.filt = infer_filter(self.ccd_raw, filt=filt, verbose=verbose)
-        set_ccd_gain_rdnoise(self.ccd_raw,
-                             gain=GAIN[self.filt],
-                             rdnoise=RDNOISE[self.filt])
+        set_ccd_gain_rdnoise(
+            self.ccd_raw,
+            gain=GAIN[self.filt],
+            rdnoise=RDNOISE[self.filt]
+        )
         self.gain = self.ccd_raw.gain
         self.rdnoise = self.ccd_raw.rdnoise
+        self.sect_o = OBJSECTS(self.right_half)[self.filt][0]
+        self.sect_e = OBJSECTS(self.right_half)[self.filt][1]
+        self.sl_o = OBJSLICES(self.right_half)[self.filt][0]
+        self.sl_e = OBJSLICES(self.right_half)[self.filt][1]
 
     def preproc(self, mdarkpath='default',
                 mflatpath_o='default', mflatpath_e='default',
@@ -161,7 +169,7 @@ class NICPolImage:
                 verti_sigclip_kw=dict(sigma=2, maxiters=5),
                 fouri_peak_infer_section="[300:500, :]",
                 fouri_peak_sigclip_kw={
-                    'sigma_lower': np.inf, 'sigma_upper': 3},
+                    'sigma_lower': 3, 'sigma_upper': 3},
                 fouri_min_freq=1/100,
                 fouri_max_peaks=3,
                 fouri_npool=8,
@@ -170,9 +178,17 @@ class NICPolImage:
                 do_crrej=True,
                 verbose=False,
                 verbose_crrej=False,
-                crrej_kw=None
+                crrej_kw=None,
+                bezel_x=(0, 0),
+                bezel_y=(0, 0),
+                replace=np.nan
                 ):
         """ Do full preprocess to NHAO NIC.
+        Note
+        ----
+        A CCDData or array in the shape of original FITS file is denoted
+        with underbar as self._xxx.
+
         Parameters
         ----------
         mdarkpath, mflatpath : path-like, None, 'default', optional.
@@ -188,7 +204,12 @@ class NICPolImage:
             used. To turn off any masking, set ``None``.
 
 
-
+        bezel_x, bezel_y : array-like of int
+            The x and y bezels, in ``[lower, upper]`` convention. If
+            ``0``, no replacement happens.
+        replace : int, float, nan, optional.
+            The value to replace the pixel value where it should be
+            masked. If ``None``, the ccds will be trimmed.
         Returns
         -------
 
@@ -204,42 +225,62 @@ class NICPolImage:
             if verbose:
                 print("mdarkpath is 'default': using NICpolpy default dark.")
             self.mdarkpath = DARK_PATHS[self.filt]
+        else:
+            self.mdarkpath = mdarkpath
 
         if mflatpath_o == 'default':
             if verbose:
                 print("mflatpath_o is 'default': using NICpolpy default flat.")
             self.mflatpath_o = FLAT_PATHS[self.filt]['o']
+        else:
+            self.mflatpath_o = mflatpath_o
 
         if mflatpath_e == 'default':
             if verbose:
                 print("mflatpath_e is 'default': using NICpolpy default flat.")
             self.mflatpath_e = FLAT_PATHS[self.filt]['e']
+        else:
+            self.mflatpath_e = mflatpath_e
 
         if mask == 'default':
             if verbose:
                 print("mask is 'default': using NICpolpy default mask.")
             # Set mask for high-dark / low-flat pixels
             pixmask = fits.open(MASK_PATHS[self.filt])[0].data.astype(bool)
-            self.mask = propagate_ccdmask(self.ccd_raw, pixmask)
+            self._mask = propagate_ccdmask(self.ccd_raw, pixmask)
         else:
             if mask is None and verbose:
                 print("mask is None: no mask will be used (not recommended).")
-            self.mask = mask
+            self._mask = mask
 
-        self.ccd_proc = self.ccd_raw.copy()
+        self._ccd_proc = self.ccd_raw.copy()
+        # Do not split oe of original CCD because of vertical pattern
+        # subtraction and Fourier pattern subtraction must be done based
+        # on the full CCD frame!
+        self.mask_o_proc = self._mask[self.sl_o]
+        self.mask_e_proc = self._mask[self.sl_e]
+        vb = dict(verbose=verbose)
 
         # ===============================================================
         # * 0. Subtract Dark (regard bias is also subtracted)
         # ===============================================================
-        self.ccd_dark = load_ccd(self.mdarkpath)
+        if self.mdarkpath is not None:
+            self._ccd_dark = load_ccd(self.mdarkpath)
+            self.ccd_dark_o = trim_ccd(self._ccd_dark, self.sect_o, **vb)
+            self.ccd_dark_e = trim_ccd(self._ccd_dark, self.sect_e, **vb)
+        else:  # e.g., path is given as None
+            self._ccd_dark = None
+            self.ccd_dark_o = None
+            self.ccd_dark_e = None
+
         self.ccd_bdxx = bdf_process(
-            self.ccd_proc,
+            self._ccd_proc,
             mdarkpath=self.mdarkpath,
             dark_scale=True,
             verbose_bdf=verbose,
             verbose_crrej=verbose_crrej
         )
-        self.ccd_proc = self.ccd_bdxx.copy()
+        self._ccd_proc = self.ccd_bdxx.copy()
 
         # ===============================================================
         # * 1. Subtract vertical patterns.
@@ -255,16 +296,17 @@ class NICPolImage:
                 dtype='float32',       # hard-coded
                 return_pattern=False,  # hard-coded
                 update_header=True,    # hard-coded
-                verbose=verbose
+                **vb
             )
-            self.ccd_vs = vertical_correct(self.ccd_proc, **self.verti_corr_kw)
-            self.ccd_proc = self.ccd_vs.copy()
+            self._ccd_vs = vertical_correct(
+                self._ccd_proc, **self.verti_corr_kw)
+            self._ccd_proc = self._ccd_vs.copy()
 
         # ==============================================================
         # * 2. Subtract Fourier pattern
         # ==============================================================
         if do_fouri:
-            self.ccd_fc = self.ccd_proc.copy()
+            self._ccd_fc = self._ccd_proc.copy()
 
             if fouri_fitting_y_sections is None:
                 fouri_fitting_y_sections = FOURIERSECTS[self.filt]
@@ -303,7 +345,7 @@ class NICPolImage:
             )
 
             s_fouri_sub = "The obtained Fourier pattern subtracted"
-            self.ccd_fc.header["FIT-AXIS"] = (
+            self._ccd_fc.header["FIT-AXIS"] = (
                 "COL",
                 "The direction to which Fourier series is fitted."
             )
@@ -311,132 +353,279 @@ class NICPolImage:
             # * 2-1. Find Fourier peaks
             # ----------------------------------------------------------
             _t = Time.now()
-            f_reg = trim_ccd(self.ccd_fc, **self.fouri_trim_kw)
+            f_reg = trim_ccd(self._ccd_fc, **self.fouri_trim_kw)
             self.freqs = find_fourier_peaks(f_reg.data, axis=0,
                                             **self.fouri_freq_kw)
 
-            self.ccd_fc.header["FIT-NF"] = (
+            self._ccd_fc.header["FIT-NF"] = (
                 len(self.freqs), "Number of frequencies used for fit.")
             for k, f in enumerate(self.freqs):
-                self.ccd_fc.header[f"FIT-F{k+1:03d}"] = (
+                self._ccd_fc.header[f"FIT-F{k+1:03d}"] = (
                     f, f"[1/pix] The {k+1:03d}-th frequency")
-            add_to_header(self.ccd_fc.header, 'h', s_fouri_peak,
-                          verbose=verbose, t_ref=_t)
+            add_to_header(self._ccd_fc.header, 'h', s_fouri_peak,
+                          **vb, t_ref=_t)
 
             # * 2-2. Fit Fourier series
             # ----------------------------------------------------------
             _t = Time.now()
             res = fit_fourier(
-                self.ccd_fc.data,
+                self._ccd_fc.data,
                 self.freqs,
-                mask=self.mask,
+                mask=self._mask,
                 filt=self.filt,
                 **self.fouri_corr_kw
             )
-            self.pattern = res[0]
+            self._pattern_fc = res[0]
             self.popts = res[1]
-            add_to_header(self.ccd_fc.header, 'h', s_fouri_corr,
-                          verbose=verbose, t_ref=_t)
+            add_to_header(self._ccd_fc.header, 'h', s_fouri_corr,
+                          **vb, t_ref=_t)
 
             # * 2-3. Subtract Fourier pattern
             # ----------------------------------------------------------
             _t = Time.now()
-            self.ccd_fc.data -= self.pattern
-            add_to_header(self.ccd_fc.header, 'h', s_fouri_sub,
-                          verbose=verbose, t_ref=_t)
+            self._ccd_fc.data -= self._pattern_fc
+            add_to_header(self._ccd_fc.header, 'h', s_fouri_sub,
+                          **vb, t_ref=_t)
 
-            self.ccd_proc = self.ccd_fc.copy()
+            self._ccd_proc = self._ccd_fc.copy()
 
         # ==============================================================
         # * 3. Split o-/e-ray
         # ==============================================================
         self.ccd_o_bdxx, self.ccd_e_bdxx = split_oe(
-            self.ccd_proc,
+            self._ccd_proc,
             filt=self.filt,
-            verbose=verbose
+            **vb
         )
         self.ccd_o_proc = self.ccd_o_bdxx.copy()
         self.ccd_e_proc = self.ccd_e_bdxx.copy()
 
-        self.ccd_dark_o = trim_ccd(
-            self.ccd_dark, OBJSECTS[self.filt][0], verbose=verbose)
-        self.ccd_dark_e = trim_ccd(
-            self.ccd_dark, OBJSECTS[self.filt][1], verbose=verbose)
-        self.mask_o = self.mask[OBJSLICES[self.filt][0]]
-        self.mask_e = self.mask[OBJSLICES[self.filt][1]]
-        self.mask_o_proc = self.mask_o.copy()
-        self.mask_e_proc = self.mask_e.copy()
-
         # ==============================================================
         # * 4. Flat correct
         # ==============================================================
-        self.ccd_o_bdfx = bdf_process(
-            self.ccd_o_bdxx,
-            mflatpath=self.mflatpath_o,
-            verbose_bdf=verbose,
-            verbose_crrej=verbose_crrej
-        )
-        self.ccd_e_bdfx = bdf_process(
-            self.ccd_e_bdxx,
-            mflatpath=self.mflatpath_e,
-            verbose_bdf=verbose,
-            verbose_crrej=verbose_crrej
-        )
-        self.ccd_o_proc = self.ccd_o_bdfx.copy()
-        self.ccd_e_proc = self.ccd_e_bdfx.copy()
+        if self.mflatpath_o is not None:
+            self.ccd_o_bdfx = bdf_process(
+                self.ccd_o_bdxx,
+                mflatpath=self.mflatpath_o,
+                verbose_bdf=verbose,
+                verbose_crrej=verbose_crrej
+            )
+            self.ccd_o_proc = self.ccd_o_bdfx.copy()
+        else:
+            self.ccd_o_bdfx = None
+            # Do not update ccd_o_proc
+
+        if self.mflatpath_e is not None:
+            self.ccd_e_bdfx = bdf_process(
+                self.ccd_e_bdxx,
+                mflatpath=self.mflatpath_e,
+                verbose_bdf=verbose,
+                verbose_crrej=verbose_crrej
+            )
+            self.ccd_e_proc = self.ccd_e_bdfx.copy()
+        else:
+            self.ccd_e_bdfx = None
+            # Do not update ccd_e_proc
 
         # ==============================================================
         # * 5. Error calculation
         # ==============================================================
         s = "Pixel error calculated for both o/e-rays"
         _t = Time.now()
-        self.flat_o = load_ccd(self.mflatpath_o)
-        self.flat_e = load_ccd(self.mflatpath_e)
-        # rough estimations for the dark standard deviations
-        self.dark_std_o = (self.ccd_dark_o.uncertainty.array
-                           * np.sqrt(self.ccd_dark_o.header['NCOMBINE']))
-        self.dark_std_e = (self.ccd_dark_e.uncertainty.array
-                           * np.sqrt(self.ccd_dark_e.header['NCOMBINE']))
+        try:
+            self.ccd_flat_o = load_ccd(self.mflatpath_o)
+            flat_o_data = self.ccd_flat_o.data
+            flat_o_err = self.ccd_flat_o.uncertainty.array
+        except (FileNotFoundError, ValueError):
+            self.ccd_flat_o = None
+            flat_o_data = None
+            flat_o_err = None
+
+        try:
+            self.ccd_flat_e = load_ccd(self.mflatpath_e)
+            flat_e_data = self.ccd_flat_e.data
+            flat_e_err = self.ccd_flat_e.uncertainty.array
+        except (FileNotFoundError, ValueError):
+            self.ccd_flat_e = None
+            flat_e_data = None
+            flat_e_err = None
+
+        try:
+            # if self._ccd_dark is not None:
+            # rough estimations for the dark standard deviations
+            self.dark_std_o = (self.ccd_dark_o.uncertainty.array
+                               * np.sqrt(self.ccd_dark_o.header['NCOMBINE']))
+            self.dark_std_e = (self.ccd_dark_e.uncertainty.array
+                               * np.sqrt(self.ccd_dark_e.header['NCOMBINE']))
+            subtracted_dark_o = self.ccd_dark_o.data
+            subtracted_dark_e = self.ccd_dark_e.data
+        except (TypeError, AttributeError):
+            # else:
+            self.dark_std_o = None
+            self.dark_std_e = None
+            subtracted_dark_o = None
+            subtracted_dark_e = None
+
         self.err_o = errormap(
             self.ccd_o_bdxx,
             gain_epadu=self.gain,
             rdnoise_electron=self.rdnoise,
-            subtracted_dark=self.ccd_dark_o.data,
+            subtracted_dark=subtracted_dark_o,
             dark_std=self.dark_std_o,
-            flat=self.flat_o.data,
-            flat_err=self.flat_o.uncertainty.array
+            flat=flat_o_data,
+            flat_err=flat_o_err
         )
         self.err_e = errormap(
             self.ccd_e_bdxx,
             gain_epadu=self.gain,
             rdnoise_electron=self.rdnoise,
-            subtracted_dark=self.ccd_dark_e.data,
+            subtracted_dark=subtracted_dark_e,
             dark_std=self.dark_std_e,
-            flat=self.flat_e.data,
-            flat_err=self.flat_e.uncertainty.array
+            flat=flat_e_data,
+            flat_err=flat_e_err
         )
 
-        add_to_header(self.ccd_o_bdfx.header, 'h', s, t_ref=_t)
+        add_to_header(self.ccd_o_proc.header, 'h', s, t_ref=_t)
+        add_to_header(self.ccd_e_proc.header, 'h', s, t_ref=_t)
 
         # ==============================================================
         # * 6. CR-rejection
         # ==============================================================
-        crkw = dict(crrej_kw=crrej_kw, verbose=verbose_crrej,
-                    full=True, update_header=True)
-        self.ccd_o_bdfc, self.mask_o_cr, self.crrej_kw = cr_reject_nic(
-            self.ccd_o_bdfx,
-            mask=self.mask_o,
-            **crkw
-        )
-        self.ccd_e_bdfc, self.mask_e_cr, _ = cr_reject_nic(
-            self.ccd_e_bdfx,
-            mask=self.mask_e,
-            **crkw
-        )
-        self.ccd_o_proc = self.ccd_o_bdfc.copy()
-        self.ccd_e_proc = self.ccd_e_bdfc.copy()
-        self.mask_o_proc = self.mask_o_proc | self.mask_o_cr
-        self.mask_e_proc = self.mask_e_proc | self.mask_e_cr
+        if do_crrej:
+            crkw = dict(
+                crrej_kw=crrej_kw,
+                filt=self.filt,
+                verbose=verbose_crrej,
+                full=True,
+                update_header=True
+            )
+            self.ccd_o_bdfc, self.mask_o_cr, self.crrej_kw = cr_reject_nic(
+                self.ccd_o_proc,
+                mask=self.mask_o_proc,
+                **crkw
+            )
+            self.ccd_e_bdfc, self.mask_e_cr, _ = cr_reject_nic(
+                self.ccd_e_proc,
+                mask=self.mask_e_proc,
+                **crkw
+            )
+            self.ccd_o_proc = self.ccd_o_bdfc.copy()
+            self.ccd_e_proc = self.ccd_e_bdfc.copy()
+            self.mask_o_proc = self.mask_o_proc | self.mask_o_cr
+            self.mask_e_proc = self.mask_e_proc | self.mask_e_cr
+
+        # ==============================================================
+        # * 8. Trim by bezel widths
+        # ==============================================================
+        # TODO: maybe simply ``replace=False`` to halt this part
+        ny_o, nx_o = self.ccd_o_proc.data.shape
+        ny_e, nx_e = self.ccd_e_proc.data.shape
+        if not ((tuple(bezel_x) == (0, 0)) and (tuple(bezel_y) == (0, 0))):
+            if replace is None:
+                s_o = (f"[{bezel_x[0] + 1}:{nx_o - bezel_x[1]},"
+                       + f"{bezel_y[0] + 1}:{ny_o - bezel_y[1]}]")
+                s_e = (f"[{bezel_x[0] + 1}:{nx_e - bezel_x[1]},"
+                       + f"{bezel_y[0] + 1}:{ny_e - bezel_y[1]}]")
+                self.ccd_o_proc = trim_ccd(self.ccd_o_bdfc, fits_section=s_o)
+                self.ccd_e_proc = trim_ccd(self.ccd_e_bdfc, fits_section=s_e)
+                self.mask_o_proc = self.mask_o_proc[fitsxy2py(s_o)]
+                self.mask_e_proc = self.mask_e_proc[fitsxy2py(s_e)]
+            else:
+                self.ccd_o_proc.data[:bezel_y[0], :] = replace
+                self.ccd_e_proc.data[:bezel_y[0], :] = replace
+                self.ccd_o_proc.data[ny_o - bezel_y[1]:, :] = replace
+                self.ccd_e_proc.data[ny_e - bezel_y[1]:, :] = replace
+                self.ccd_o_proc.data[:, :bezel_x[0]] = replace
+                self.ccd_e_proc.data[:, :bezel_x[0]] = replace
+                self.ccd_o_proc.data[:, nx_o - bezel_x[0]:] = replace
+                self.ccd_e_proc.data[:, nx_e - bezel_x[0]:] = replace
+
+        # # ==============================================================
+        # # * 8. Add "list" version of CCDs
+        # # ==============================================================
+        # # By not copying, they're linked together and updated simult.ly.
+        # self.ccd_bdfx  = [self.ccd_o_bdfx  , self.ccd_e_bdfx  ]
+        # self.ccd_bdfc  = [self.ccd_o_bdfc  , self.ccd_e_bdfc  ]
+        # self.ccd_proc  = [self.ccd_o_proc  , self.ccd_e_proc]
+        # self.mask_proc = [self.mask_o_proc , self.mask_e_proc ]
+        # self.err       = [self.err_o       , self.err_e       ]
+        # self.flat      = [self.ccd_flat_o  , self.ccd_flat_e  ]
+        # self.dark      = [self.ccd_dark_o  , self.ccd_dark_e  ]
+
+    def edgereplace(self, bezel_x=(5, 5), bezel_y=(5, 5), replace=np.nan):
+        ''' Replace edge values to null for better zscale display.
+        Parameters
+        ----------
+        bezel_x, bezel_y : array-like of int
+            The x and y bezels, in ``[lower, upper]`` convention. If
+            ``0``, no replacement happens.
+        replace : int, float, nan, optional.
+            The value to replace the pixel value where it should be
+            masked. If ``None``, the ccds will be trimmed.
+        '''
+
+    # def edgemask(self, bezel_x=(10, 10), bezel_y=(10, 10),
+    #              sigma_lower=1, sigma_upper=1,
+    #              maxiters=10, edge_ksigma=3, replace=np.nan):
+    #     ''' Replace edge values to null for better zscale display.
+    #     Parameters
+    #     ----------
+    #     bezel_x, bezel_y : int, float, list of such, optional.
+    #         The x and y bezels, in ``[lower, upper]`` convention.
+    #     replace : int, float, nan, None, optional.
+    #         The value to replace the pixel value where it should be
+    #         masked. If ``None``, nothing is replaced, but only the
+    #         ``self.mask_proc`` will have been updated.
+    #     '''
+    #     def _idxmask(maskarr):
+    #         try:
+    #             idx_mask = np.max(np.where(maskarr))
+    #         except ValueError:  # sometimes no edge is detected
+    #             idx_mask = 0
+    #         return idx_mask
+
+    #     sc_kw = dict(sigma_lower=sigma_lower,
+    #                  sigma_upper=sigma_upper,
+    #                  maxiters=maxiters)
+    #     self._edge_sigclip_mask = [None, None]
+
+    #     # Iterate thru o-/e-ray
+    #     for i, (ccd, mask) in enumerate(zip(self.ccd_proc, self.mask_proc)):
+    #         ny, nx = ccd.data.shape
+    #         _, med, std = sigma_clipped_stats(ccd.data, mask, **sc_kw)
+    #         scmask = (ccd.data < (med - edge_ksigma*std))
+    #         self._edge_sigclip_mask[i] = scmask
+    #         # Mask for more than half of the total N is masked
+    #         xmask = np.sum(scmask, axis=0) > ny/2
+    #         ymask = np.sum(scmask, axis=1) > nx/2
+
+    #         # Sometimes "low level row/col" may occur other than edge.
+    #         # Find whether the edge is at left/right of x and
+    #         # upper/lower of y.
+    #         isleft = (np.sum(xmask[:nx//2]) > np.sum(xmask[nx//2:]))
+    #         islowr = (np.sum(ymask[:ny//2]) > np.sum(ymask[ny//2:]))
+
+    #         # * Set mask for x-axis edge
+    #         if isleft:
+    #             ix = np.min([_idxmask(xmask[:nx//2]), bezel_x[0]])
+    #             sx = (slice(None, None, None), slice(None, ix, None))
+    #         else:
+    #             ix = np.min([_idxmask(xmask[nx//2:]), nx - bezel_x[0]])
+    #             sx = (slice(None, None, None), slice(ix, None, None))
+
+    #         # * Set mask for y-axis edge
+    #         if islowr:
+    #             iy = np.min([_idxmask(ymask[:ny//2]), bezel_y[0]])
+    #             sy = (slice(None, iy, None), slice(None, None, None))
+    #         else:
+    #             iy = np.max([_idxmask(ymask[ny//2:]), ny - bezel_y[1]])
+    #             sy = (slice(iy, None, None), slice(None, None, None))
+
+    #         mask[sx] = True
+    #         mask[sy] = True
+    #         if replace is not None:
+    #             ccd.data[sx] = replace
+    #             ccd.data[sy] = replace
 
     def find_obj(self, thresh=3, bezel_x=(40, 40), bezel_y=(200, 120),
                  box_size=(64, 64), filter_size=(12, 12), deblend_cont=1,
@@ -445,7 +634,7 @@ class NICPolImage:
         """
         Note
         ----
-        This includes ``sep``'s `extract`` and ``background``.
+        This includes ``sep``'s ``extract`` and ``background``.
         Equivalent processes in photutils may include ``detect_sources``
         and ``source_properties``, and ``Background2D``, respectively.
 
@@ -503,7 +692,11 @@ class NICPolImage:
         s_obj = "Objects found from sep (v {}) with {}."
 
         _t = Time.now()
-        self.bkg_o = sep_back(self.ccd_o_proc.data, mask=self.mask_o, **bkg_kw)
+        self.bkg_o = sep_back(
+            self.ccd_o_proc.data,
+            mask=self.mask_o_proc,
+            **bkg_kw
+        )
         add_to_header(self.ccd_o_proc.header, 'h', s_bkg,
                       verbose=verbose, t_ref=_t)
 
@@ -512,14 +705,18 @@ class NICPolImage:
             self.ccd_o_proc.data,
             bkg=self.bkg_o,
             err=self.err_o,
-            mask=self.mask_o,
+            mask=self.mask_o_proc,
             **ext_kw)
         _s = s_obj.format(sepv, ext_kw)
         add_to_header(self.ccd_o_proc.header, 'h', _s,
                       verbose=verbose, t_ref=_t)
 
         _t = Time.now()
-        self.bkg_e = sep_back(self.ccd_e_proc.data, mask=self.mask_e, **bkg_kw)
+        self.bkg_e = sep_back(
+            self.ccd_e_proc.data,
+            mask=self.mask_e_proc,
+            **bkg_kw
+        )
         add_to_header(self.ccd_e_proc.header, 'h', s_bkg,
                       verbose=verbose, t_ref=_t)
 
@@ -528,7 +725,7 @@ class NICPolImage:
             self.ccd_e_proc.data,
             bkg=self.bkg_e,
             err=self.err_e,
-            mask=self.mask_e,
+            mask=self.mask_e_proc,
             **ext_kw)
         _s = s_obj.format(sepv, ext_kw)
         add_to_header(self.ccd_e_proc.header, 'h', _s,
@@ -871,14 +1068,14 @@ class NICPolImage:
             vskw = dict(dtype='float32',
                         return_pattern=False,
                         update_header=True)
-            self.ccd_vs = vertical_correct(
+            self._ccd_vs = vertical_correct(
                 self.ccd_raw,
                 fitting_sections=self.verti_fitting_sections,
                 method=self.verti_method,
                 sigclip_kw=self.verti_sigclip_kw,
                 **vskw  # hard-coded
             )
-            self.ccd_proc = self.ccd_vs.copy()
+            self.ccd_proc = self._ccd_vs.copy()
 
         if do_fouri:
             # 2. Find Fourier peaks
@@ -896,7 +1093,7 @@ class NICPolImage:
             self.fouri_subtract_x_sections = fouri_subtract_x_sections
 
             fourier_region = trim_ccd(
-                self.ccd_vs,
+                self._ccd_vs,
                 fits_section=self.fouri_peak_infer_section
             )
             self.freqs = find_fourier_peaks(
@@ -910,7 +1107,7 @@ class NICPolImage:
             # 3. Fit Fourier series
             fckw = dict(apply_crrej_mask=False, apply_sigclip_mask=True)
             res = fit_fourier(
-                self.ccd_vs.data,
+                self._ccd_vs.data,
                 npool=fouri_npool,
                 mask=self.additional_mask,
                 filt=self.filt,
@@ -918,11 +1115,11 @@ class NICPolImage:
                 subtract_x_sections=self.fouri_subtract_x_sections,
                 **fckw  # hard-coded
             )
-            self.pattern = res[0]
+            self._pattern_fc = res[0]
             self.popts = res[1]
-            self.ccd_fc = self.ccd_vs.copy()
-            self.ccd_fc.data -= self.pattern
-            self.ccd_proc = self.ccd_fc.copy()
+            self._ccd_fc = self._ccd_vs.copy()
+            self._ccd_fc.data -= self._pattern_fc
+            self.ccd_proc = self._ccd_fc.copy()
 
     def correct_fourier(self, mask=None, crrej_kw=None,
                         crrej_verbose=True, output=None, overwrite=False,
@@ -959,22 +1156,22 @@ class NICPolImage:
                          fitting_section_upper=self.fitting_section_upper,
                          sigclip_kw=self.fourier_peak_sigclip_kw,
                          full=True, **self.fourier_extrapolation_kw)
-        self.ccd_fc = res[0]
-        self.pattern = res[1]
+        self._ccd_fc = res[0]
+        self._pattern_fc = res[1]
         self.popt = res[2]
         self.freq = res[3]
 
         # If ``ccd=self.ccd_raw_cr`` in fouriersub, the resulting CCD
         # will contain the pattern-subtracted value AFTER CR-REJ, which
         # is not desirable sometimes.
-        self.ccd_fc.data = self.ccd_raw.data - self.pattern
+        self._ccd_fc.data = self.ccd_raw.data - self._pattern_fc
         ##########################
         # Remove the above line if you used ``ccd=self.ccd_raw``, etc.
 
         if output is not None:
-            self.ccd_fc.write(Path(output), overwrite=overwrite)
+            self._ccd_fc.write(Path(output), overwrite=overwrite)
 
         if calc_var:
-            self.var_fc = (self.ccd_fc.data*(flat_err + 1/self.gain)
+            self.var_fc = (self._ccd_fc.data*(flat_err + 1/self.gain)
                            + self.rdnoise**2)
 '''

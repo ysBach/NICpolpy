@@ -1,3 +1,3 @@
-include nicpolpy/mask/*.fits
-include nicpolpy/dark/*.fits
-include nicpolpy/flat/*.fits
+# include nicpolpy/mask/*.fits
+# include nicpolpy/dark/*.fits
+# include nicpolpy/flat/*.fits

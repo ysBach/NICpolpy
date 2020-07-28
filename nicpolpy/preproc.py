@@ -1,4 +1,5 @@
 from multiprocessing import Pool
+from pathlib import Path
 
 import astropy
 import numpy as np
@@ -6,18 +7,19 @@ from astropy.nddata import CCDData
 from astropy.stats import sigma_clip, sigma_clipped_stats
 from astropy.time import Time
 
-from ysfitsutilpy import (LACOSMIC_KEYS, add_to_header, crrej, datahdr_parse,
-                          fitsxy2py)
+from ysfitsutilpy import (LACOSMIC_KEYS, CCDData_astype, add_to_header, crrej,
+                          datahdr_parse, fitsxy2py, load_ccd,
+                          set_ccd_gain_rdnoise, trim_ccd)
 
-from .util import (FOURIERSECTS, GAIN, RDNOISE, VERTICALSECTS, fft_peak_freq,
-                   fit_sinusoids, infer_filter, multisin)
+from .util import (FOURIERSECTS, GAIN, NICSECTS, RDNOISE, VERTICALSECTS,
+                   fft_peak_freq, fit_sinusoids, infer_filter, multisin)
 
 __all__ = ["cr_reject_nic", "vertical_correct", "lrsubtract", "fit_fourier",
-           "find_fourier_peaks"]
+           "find_fourier_peaks", "reorganize_fits"]
 
 
-def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, crrej_kw=None,
-                  verbose=True, full=False):
+def cr_reject_nic(ccd, mask=None, filt=None, update_header=True,
+                  add_process=True, crrej_kw=None, verbose=True, full=False):
     """
     Parameters
     ----------
@@ -29,6 +31,8 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, crrej_kw=None,
         ``"FILTER"``).
     update_header: bool, optional.
         Whether to update the header if there is any.
+    add_process : bool, optional.
+        Whether to add ``PROCESS`` key to the header.
     crrej_kw: dict, optional.
         The keyword arguments for the ``astroscrappy.detect_cosmics``.
         If ``None`` (default), the parameters for IRAF-version of L.A.
@@ -70,6 +74,8 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, crrej_kw=None,
         mask=mask,
         **crrej_kw,
         propagate_crmask=False,
+        update_header=update_header,
+        add_process=add_process,
         verbose=verbose
     )
 
@@ -158,7 +164,7 @@ def vertical_correct(ccd, fitting_sections=None,
 
     ny, nx = data.shape
     vpattern = np.repeat(strips, ny/2, axis=0)
-    vsub = data - vpattern
+    vsub = data - vpattern.astype(dtype)
 
     if update_header and hdr is not None:
         s = (f"Vertical pattern subtracted using {fitting_sections} "
@@ -178,15 +184,14 @@ def vertical_correct(ccd, fitting_sections=None,
 
 
 def lrsubtract(ccd, fitting_sections=["[:, 50:100]", "[:, 924:974]"],
-               method='median', sigma=3, maxiters=5, sigclip_kw={},
+               method='median', sigclip_kw=dict(sigma=2, maxiters=5),
                dtype='float32', update_header=True, verbose=False):
     """Subtract left from right quadrants w/ vertical pattern removal."""
     _t = Time.now()
 
     nccd = vertical_correct(ccd=ccd,
                             fitting_sections=fitting_sections,
-                            method=method, sigma=sigma, maxiters=maxiters,
-                            sigclip_kw=sigclip_kw, dtype=dtype,
+                            method=method, sigclip_kw=sigclip_kw, dtype=dtype,
                             return_pattern=False,
                             update_header=update_header)
     nx = nccd.data.shape[1]
@@ -389,6 +394,165 @@ def fit_fourier(data, freqs, mask=None, filt=None,
     # pattern[subsl] += np.stack(res[:, 2], axis=axis - 1)
 
     # return pattern, popts, mask
+
+
+def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', crrej_kw=None,
+                    verbose=False, fitting_sections=None,
+                    method='median', sigclip_kw=dict(sigma=2, maxiters=5),
+                    update_header=True, verbose_crrej=False
+                    ):
+    ''' Rename the original NHAO NIC image and convert to certain dtype.
+    Parameters
+    ----------
+    fpath : path-like
+        Path to the original image FITS file.
+
+    outdir : path-like
+        The top directory for the new file to be saved.
+
+    Note
+    ----
+    Original NHAO NIC image is in 32-bit integer, and is twice the size
+    it should be. To save the storage, it is desirable to convert those
+    to 16-bit. As the bias is not added to the FITS frame from NHAO NIC,
+    the pixel value in the raw FITS file can be negative. Fortunately,
+    however, the maximum pixel value when saturation occurs is only
+    about 20k, and therefore using ``int16`` rather than ``uint16`` is
+    enough.
+
+    Here, not only reducing the size, the file names are updated using
+    the original file name and header information:
+        ``<FILTER (j, h, k)><UT YYMMDD>_<COUNTER:04d>.fits``
+    It is then updated to
+        ``<FILTER (j, h, k)>_<UT YYYYMMDD>_<COUNTER:04d>
+            _<OBJECT>_<EXPTIME:.1f>_<POL-AGL1:04.1f>.fits``
+
+    '''
+    fpath = Path(fpath)
+    ccd_orig = load_ccd(fpath)
+    _t = Time.now()
+    ccd_nbit = ccd_orig.copy()
+    ccd_nbit = CCDData_astype(ccd_nbit, dtype=dtype)
+    if ccd_orig.dtype != ccd_nbit.dtype:
+        add_to_header(
+            ccd_nbit.header, 'h',
+            f"dtype (BITPIX) changed: {ccd_orig.dtype} to {ccd_nbit.dtype}",
+            t_ref=_t, verbose=verbose)
+
+    # == First, check if identical ========================================== #
+    # It takes less than about 20 ms on MBP 2018 15" (i7 2.6 GHz, 16GB
+    # 2400MHz DDR 4 on macOS 10.14.6)
+    # ysBach 2020-05-15 16:06:08 (KST: GMT+09:00)
+    np.testing.assert_almost_equal(
+        ccd_orig.data - ccd_nbit.data,
+        np.zeros(ccd_nbit.data.shape)
+    )
+
+    # == Set counter ======================================================== #
+    try:
+        counter = ccd_nbit.header["COUNTER"]
+    except KeyError:
+        try:
+            counter = fpath.stem.split('_')[1]
+            counter = counter.split('.')[0]
+            # e.g., hYYMMDD_dddd.object.pcr.fits
+        except IndexError:  # e.g., test images (``h.fits```)
+            counter = 9999
+        ccd_nbit.header['COUNTER'] = (
+            counter,
+            "Image counter of the day, 1-indexing; 9999=TEST frame"
+        )
+
+    # == Set output path ==================================================== #
+    hdr = ccd_nbit.header
+    try:
+        # Start of exposure, if exists
+        yyyymmdd = Time(hdr['DATE-OBS'], format='isot').strftime('%Y%m%d')
+    except KeyError:
+        # if only the FITS creation date (after the exposure) is present
+        # Example: 2018 Flat data
+        yyyymmdd = Time(hdr['TELINFO'], format='iso').strftime('%Y%m%d')
+    outname = (
+        f"{hdr['FILTER'].lower()}"  # h, j, k
+        + f"_{yyyymmdd}"      # YYYY-MM-DD
+        + f"_{int(counter):04d}"
+        + f"_{hdr['OBJECT']}"
+        + f"_{hdr['EXPTIME']:.1f}"
+    )
+    # because of POL-AGL1, I cannot use yfu's renaming scheme...
+    # ysBach 2020-05-15 16:22:37 (KST: GMT+09:00)
+    try:
+        outname += f"_{hdr['POL-AGL1']:04.1f}.fits"
+    except ValueError:  # non-pol mode has POL-AGL1 = 'x'
+        outname += f"_{hdr['POL-AGL1']:s}.fits"
+    if outdir is not None:
+        outpath = Path(outdir)/outname
+    else:
+        outpath = None
+
+    # == Update warning-invoking parts ====================================== #
+    try:
+        ccd_nbit.header["MJD-STR"] = float(hdr["MJD-STR"])
+        ccd_nbit.header["MJD-END"] = float(hdr["MJD-END"])
+    except KeyError:
+        pass
+
+    # == Simple process to remove artifacts... ============================== #
+    ccd_nbit = vertical_correct(
+        ccd_nbit,
+        fitting_sections=fitting_sections,
+        method=method,
+        sigclip_kw=sigclip_kw,
+        dtype='int16',  # By using int, it mimics lower-medianing!!!
+        return_pattern=False,
+        update_header=update_header,
+        verbose=verbose
+    )
+    # left half and right half
+    part_l = trim_ccd(ccd_nbit, NICSECTS["left"], verbose=verbose)
+    part_r = trim_ccd(ccd_nbit, NICSECTS["right"], verbose=verbose)
+
+    # Extract filter and add gain and readnoise to header
+    filt = infer_filter(ccd_nbit, filt=None, verbose=verbose)
+    set_ccd_gain_rdnoise(part_r, gain=GAIN[filt], rdnoise=RDNOISE[filt],
+                         verbose=verbose, update_header=True)
+    set_ccd_gain_rdnoise(part_l, gain=GAIN[filt], rdnoise=RDNOISE[filt],
+                         verbose=verbose, update_header=True)
+
+    # Better to use default LACOSMIC because we want to strongly remove
+    # not only CR but also hot pixels.
+    if crrej_kw is None:
+        crrej_kw = LACOSMIC_KEYS.copy()
+        crrej_kw["sepmed"] = True
+
+    # To include crrej HISTORY to part_r.header, link:
+    part_l.header = part_r.header.copy()  # Takes ~ 0.5 ms
+    part_l = cr_reject_nic(part_l, crrej_kw=crrej_kw, verbose=verbose_crrej,
+                           add_process=False)
+    part_r.header = part_l.header
+
+    # By forcing it to int (similar to np.floor), it'll slightly
+    # contribute removing CR:
+    _t = Time.now()
+    part_r.data -= part_l.data.astype(dtype)
+    add_to_header(
+        part_r.header, 'h',
+        ("Left part (vertical subtracted and CR-rejected) is subtracted "
+         + "from the right part (only vertical subtracted)"),
+        t_ref=_t, verbose=verbose
+    )
+
+    ccd_nbit = part_r.copy()
+
+    # == Write ============================================================== #
+    if outpath is not None:
+        try:
+            ccd_nbit.write(outpath, overwrite=True, output_verify='fix')
+        except FileNotFoundError:
+            outpath.parent.mkdir(parents=True)
+            ccd_nbit.write(outpath, overwrite=True, output_verify='fix')
+
+    return ccd_nbit
 
 
 '''

@@ -30,15 +30,25 @@ USEFUL_KEYS = ["DATE-OBS", "UT-STR", "EXPTIME", "UT-END", "DATA-TYP", "OBJECT",
                "NICTMP1", "NICTMP2", "NICTMP3", "NICTMP4", "NICTMP5",
                "NICHEAT", "DET-ID"]
 
-#                     140       420          140      420
-OBJSECTS = dict(J=["[540:680, 310:730]", "[725:865, 310:730]"],
-                H=["[565:705, 335:755]", "[745:885, 335:755]"],
-                K=["[560:700, 345:765]", "[730:870, 345:765]"])
+
+def OBJSECTS(right_half=False):
+    if right_half:
+        #                 140       420          140      420
+        return dict(J=["[28:168, 310:730]", "[213:353, 310:730]"],
+                    H=["[53:193, 335:755]", "[233:373, 335:755]"],
+                    K=["[48:188, 345:765]", "[218:358, 345:765]"])
+
+    else:
+        #                 140       420          140      420
+        return dict(J=["[540:680, 310:730]", "[725:865, 310:730]"],
+                    H=["[565:705, 335:755]", "[745:885, 335:755]"],
+                    K=["[560:700, 345:765]", "[730:870, 345:765]"])
+
 
 NICSECTS = dict(lower="[:, :512]", upper="[:, 513:]",
                 left="[:512, :]", right="[513:, :]")
 
-VERTICALSECTS = ["[:, 50:150]", "[:, 874:974]"]
+VERTICALSECTS = ["[:, 100:250]", "[:, 850:974]"]
 FOURIPEAKSECT = "[300:500, :]"
 # FOURIERSECTS = dict(
 #     J=["[10:285]", "[755:1010]"],
@@ -91,17 +101,22 @@ FIND_KEYS = {'o': dict(ratio=1.0,  # 1.0: circular gaussian
                        brightest=None, peakmax=None)}
 
 
-OBJSLICES = {}
-NICSLICES = {}
-FOURIERSLICES = {}
-VERTICALSLICES = []
-
-for fits_sect, pyth_slice in zip([OBJSECTS, FOURIERSECTS],
-                                 [OBJSLICES, FOURIERSLICES]):
+def _fits2sl(fits_sect):
+    pyth_slice = {}
     for k, sects in fits_sect.items():
         pyth_slice[k] = []
         for sect in sects:
             pyth_slice[k].append(fitsxy2py(sect))
+    return pyth_slice
+
+
+def OBJSLICES(right_half=False):
+    return _fits2sl(OBJSECTS(right_half))
+
+
+FOURIERSLICES = _fits2sl(FOURIERSECTS)
+NICSLICES = {}
+VERTICALSLICES = []
 
 for k, sect in NICSECTS.items():
     NICSLICES[k] = fitsxy2py(sect)
@@ -126,23 +141,13 @@ def infer_filter(ccd, filt=None, verbose=True):
     return filt
 
 
-def split_oe(ccd, filt=None, verbose=True):
+def split_oe(ccd, filt=None, right_half=False, verbose=True):
     filt = infer_filter(ccd, filt=filt, verbose=verbose)
-    ccd_o = trim_ccd(ccd, fits_section=OBJSECTS[filt][0])
+    ccd_o = trim_ccd(ccd, fits_section=OBJSECTS(right_half)[filt][0])
     ccd_o.header["OERAY"] = ("o", "O-ray or E-ray. Either 'o' or 'e'.")
-    ccd_e = trim_ccd(ccd, fits_section=OBJSECTS[filt][1])
+    ccd_e = trim_ccd(ccd, fits_section=OBJSECTS(right_half)[filt][1])
     ccd_e.header["OERAY"] = ("e", "O-ray or E-ray. Either 'o' or 'e'.")
     return (ccd_o, ccd_e)
-
-# # FIXME: Drop the dependency on yfu...
-# def split_load(fpath, outputs=None, dtype='float32'):
-#     import ysfitsutilpy as yfu
-#     hdr = fits.getheader(fpath)
-#     filt = hdr["FILTER"]
-#     # ccd = yfu.CCDData_astype(yfu.load_ccd(fpath), dtype=dtype)
-#     cuts = yfu.imcopy(fpath, fits_sections=PCRSECTS[filt],
-#                       outputs=outputs, dtype=dtype)
-#     return cuts
 
 
 def split_quad(ccd):
@@ -243,7 +248,7 @@ def fit_sinusoids(xdata, ydata, freqs, p0=None, **kwargs):
 
 
 def fft_peak_freq(fftamplitude, max_peaks=5, min_freq=0,
-                  sigclip_kw={'sigma_lower': np.inf, 'sigma_upper': 3}):
+                  sigclip_kw={'sigma_lower': 3, 'sigma_upper': 3}):
     """ Select the FFT amplitude peaks for positive frequencies.
     Parameters
     ----------
@@ -316,5 +321,3 @@ def fft_peak_freq(fftamplitude, max_peaks=5, min_freq=0,
         return freq[idx]
     except (TypeError, IndexError):
         return []
-
-
