@@ -1,0 +1,15 @@
+{
+    "python.formatting.autopep8Args": [
+        "--max-line-length=110",
+
+    ],
+    "python.linting.flake8Args": [
+        "--max-line-length=110",
+
+    ],
+    "comment-divider.length": 110,
+    "editor.rulers": [
+        72,
+        110
+    ],
+}

@@ -4,49 +4,45 @@ import numpy as np
 from astropy.stats import sigma_clip
 from scipy.optimize import curve_fit
 
-from ysfitsutilpy import fitsxy2py, trim_ccd
+from ysfitsutilpy import fitsxy2py, trim_ccd, make_summary, LACOSMIC_KEYS
 
-__all__ = ["USEFUL_KEYS", "OBJSECTS", "NICSECTS",
-           "FOURIERSECTS", "FOURIPEAKSECT",
+__all__ = ["USEFUL_KEYS", "OBJSECTS", "NICSECTS", "FOURIERSECTS", "FOURIPEAKSECT",
            "PWD", "DARK_PATHS", "FLAT_PATHS", "MASK_PATHS",
            "OBJSLICES", "NICSLICES", "FOURIERSLICES", "FOURIPEAKSLICE",
            "NHAO_LOCATION",
-           "GAIN", "RDNOISE",
+           "NIC_CRREJ_KEYS", "GAIN", "RDNOISE",
            "FIND_KEYS",
-           "infer_filter",
-           "split_oe", "split_quad",
-           "multisin", "fit_sinusoids", "fft_peak_freq"
+           "infer_filter", "split_oe", "split_quad",
+           "multisin", "fit_sinusoids", "fft_peak_freq", "summary_nic"
            ]
 
 
-USEFUL_KEYS = ["DATE-OBS", "UT-STR", "EXPTIME", "UT-END", "DATA-TYP", "OBJECT",
-               "FILTER", "POL-AGL1", "PA", "INSROT", "IMGROT",
-               "WAVEPLAT", "SHUTTER",
-               "AIRMASS", "ZD", "ALTITUDE", "AZIMUTH",
-               "DITH_NUM", "DITH_NTH", "DITH_RAD",
-               "NAXIS1", "NAXIS2", "BIN-FCT1", "BIN-FCT2",
-               "RA2000", "DEC2000", "DOM-HUM", "DOM-TMP",
-               "OUT-HUM", "OUT-TMP", "OUT-WND", "WEATHER",
-               "NICTMP1", "NICTMP2", "NICTMP3", "NICTMP4", "NICTMP5",
-               "NICHEAT", "DET-ID"]
+USEFUL_KEYS = [
+    "DATE-OBS", "UT-STR", "EXPTIME", "UT-END", "DATA-TYP", "OBJECT",
+    "FILTER", "POL-AGL1", "PA", "INSROT", "IMGROT", "WAVEPLAT",
+    "SHUTTER", "AIRMASS", "ZD", "ALTITUDE", "AZIMUTH",
+    "DITH_NUM", "DITH_NTH", "DITH_RAD",
+    "NAXIS1", "NAXIS2", "BIN-FCT1", "BIN-FCT2", "RA2000", "DEC2000",
+    "DOM-HUM", "DOM-TMP", "OUT-HUM", "OUT-TMP", "OUT-WND", "WEATHER",
+    "NICTMP1", "NICTMP2", "NICTMP3", "NICTMP4", "NICTMP5", "NICHEAT", "DET-ID"
+]
 
 
 def OBJSECTS(right_half=False):
     if right_half:
-        #                 140       420          140      420
-        return dict(J=["[28:168, 310:730]", "[213:353, 310:730]"],
-                    H=["[53:193, 335:755]", "[233:373, 335:755]"],
-                    K=["[48:188, 345:765]", "[218:358, 345:765]"])
+        #                 150       440          150      440
+        return dict(J=["[28:178, 300:740]", "[213:363, 300:740]"],
+                    H=["[53:203, 325:765]", "[233:383, 325:765]"],
+                    K=["[48:198, 335:775]", "[218:368, 335:775]"])
 
     else:
-        #                 140       420          140      420
-        return dict(J=["[540:680, 310:730]", "[725:865, 310:730]"],
-                    H=["[565:705, 335:755]", "[745:885, 335:755]"],
-                    K=["[560:700, 345:765]", "[730:870, 345:765]"])
+        #                 150       420          150      440
+        return dict(J=["[540:690, 300:740]", "[725:875, 300:740]"],
+                    H=["[565:715, 325:765]", "[745:895, 325:765]"],
+                    K=["[560:710, 335:775]", "[730:880, 335:775]"])
 
 
-NICSECTS = dict(lower="[:, :512]", upper="[:, 513:]",
-                left="[:512, :]", right="[513:, :]")
+NICSECTS = dict(lower="[:, :512]", upper="[:, 513:]", left="[:512, :]", right="[513:, :]")
 
 VERTICALSECTS = ["[:, 100:250]", "[:, 850:974]"]
 FOURIPEAKSECT = "[300:500, :]"
@@ -84,6 +80,12 @@ MASK_PATHS = dict(
 
 GAIN = dict(J=9.2, H=9.8, K=9.4)
 RDNOISE = dict(J=50, H=75, K=83)
+
+NIC_CRREJ_KEYS = LACOSMIC_KEYS.copy()
+NIC_CRREJ_KEYS["sepmed"] = True
+NIC_CRREJ_KEYS['satlevel'] = np.inf
+NIC_CRREJ_KEYS['objlim'] = 5
+NIC_CRREJ_KEYS['sigfrac'] = 5
 
 FIND_KEYS = {'o': dict(ratio=1.0,  # 1.0: circular gaussian
                        sigma_radius=1.5,  # default values 1.5
@@ -166,9 +168,8 @@ def multisin(x, f, a, p, c):
     if a is not None:
         if len(a) > 0:
             if not (len(f) == len(a) == len(p)):
-                raise ValueError(
-                    "f, a, p must have identical length. "
-                    + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
+                raise ValueError("f, a, p must have identical length. "
+                                 + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
             for _a, _f, _p in zip(a, f, p):
                 # res += _a*np.sin(2*np.pi*_f*x + _p)
                 # Mathematically, the "integrated" version below should
@@ -192,9 +193,8 @@ def lin_multisin(x, f, a, p, c):
     if a is not None:
         if len(a) > 0:
             if not (len(f) == len(a) == len(p)):
-                raise ValueError(
-                    "f, a, p must have identical length. "
-                    + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
+                raise ValueError("f, a, p must have identical length. "
+                                 + f"Now they are {len(f)}, {len(a)}, {len(p)}.")
             for _a, _f, _p in zip(a, f, p):
                 # res += _a*np.sin(2*np.pi*_f*x + _p)
                 w = 2*np.pi*_f
@@ -321,3 +321,27 @@ def fft_peak_freq(fftamplitude, max_peaks=5, min_freq=0,
         return freq[idx]
     except (TypeError, IndexError):
         return []
+
+
+def summary_nic(inputs, output=None, keywords=USEFUL_KEYS, pandas=True,
+                verbose=True, **kwargs):
+    '''Extracts summary from the headers of FITS files.
+
+    Parameters
+    ----------
+    inputs : glob pattern or list-like of path-like
+        The `~glob` pattern for files (e.g., ``"2020*[012].fits"``) or
+        list of files (each element must be path-like).
+
+    output: str or path-like, optional
+        The directory and file name of the output summary file.
+
+    keywords: list or str(``"*"``), optional
+        The list of the keywords to extract (keywords should be in str).
+
+    pandas : bool, optional
+        Whether to return pandas. If ``False``, astropy table object is
+        returned. It will save csv format regardless of ``format``.
+    '''
+    return make_summary(inputs=inputs, output=output,
+                        keywords=keywords, pandas=pandas, verbose=verbose, **kwargs)
