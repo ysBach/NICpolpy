@@ -14,7 +14,7 @@ from astropy.time import Time
 import imcombinepy as imc
 from ysfitsutilpy import (LACOSMIC_KEYS, CCDData_astype, add_to_header, bdf_process, bezel_ccd, errormap,
                           fitsxy2py, imcopy, load_ccd, propagate_ccdmask, set_ccd_gain_rdnoise, stack_FITS,
-                          trim_ccd)
+                          trim_ccd, medfilt_bpm)
 from ysphotutilpy import (apphot_annulus, ellip_ap_an, fit_Gaussian2D, sep_back, sep_extract)
 
 from .preproc import (cr_reject_nic, find_fourier_peaks, fit_fourier, vertical_correct)
@@ -222,6 +222,7 @@ class NICPolDir(NICPolDirMixin):
                       verbose=True, verbose_combine=False, verbose_bdf=False, verbose_crrej=False):
         self.dark_min = dark_min
         self.sky_scale_section = sky_scale_section
+        self.sky_scale_slice = fitsxy2py(self.sky_scale_section)
         self.paths_puredark = {}
         self.paths_skydark = {}
         self.paths_skyfringe = {}
@@ -335,7 +336,7 @@ class NICPolDir(NICPolDirMixin):
 
                     # Normalize using the section
                     _t = Time.now()
-                    norm_value = np.mean(comb_sky_fringe.data[fitsxy2py(sky_scale_section)])
+                    norm_value = np.mean(comb_sky_fringe.data[self.sky_scale_slice])
                     comb_sky_fringe.data /= norm_value
                     comb_sky_fringe.data[comb_sky_fringe.data < self.fringe_min_value] = 0
                     add_to_header(comb_sky_fringe.header, 'h',
@@ -380,8 +381,12 @@ class NICPolDir(NICPolDirMixin):
         if verbose:
             print("Done.")
 
-    def preproc(self, reddir="reduced", prefer_skydark=False,
-                verbose=True, verbose_bdf=False, verbose_crrej=False):
+    def preproc(self, reddir="reduced", prefer_skydark=False, pixel_mask_method="medfilt_bpm",
+                med_ratio_clip=[0.5, 2], std_ratio_clip=[-3, 5],
+                medfilt_kw=dict(cadd=1.e-10, size=5, mode='reflect', cval=0.0,
+                                origin=0, sigma=3., maxiters=5, std_ddof=1, dtype='float32'),
+                do_crrej_pos=True, do_crrej_neg=True,
+                verbose=True, verbose_bdf=False, verbose_bpm=False, verbose_crrej=False):
         '''
         '''
         self.reddir = self.location/reddir
@@ -402,23 +407,28 @@ class NICPolDir(NICPolDirMixin):
                     if objname.lower().endswith("_sky") or objname.upper() in ["DARK", "TEST"]:
                         continue  # if sky/dark frames
 
+                    # == Setup dark and fringe ============================================================= #
                     if prefer_skydark:
                         try:
                             mdarkpath = self.paths_skydark[(f"{objname}_sky", filt, oe, exptime)]
+                            mdark = load_ccd(mdarkpath)
                         except (KeyError, IndexError, FileNotFoundError):
                             if verbose:
                                 print(f"prefer_skydark but skydark for ({objname}_sky, {filt}, {oe}, "
                                       + f"{exptime}) not found. Trying to use pure dark.")
                             try:
                                 mdarkpath = self.paths_puredark[(filt, oe, exptime)]
+                                mdark = load_ccd(mdarkpath)
                             except (KeyError, IndexError, FileNotFoundError):
                                 mdarkpath = None
+                                mdark = None
                                 if verbose:
                                     print("No dark file found. Turning off dark subtraction.")
 
                     else:
                         try:
                             mdarkpath = self.paths_puredark[(filt, oe, exptime)]
+                            mdark = load_ccd(mdarkpath)
                         except (KeyError, IndexError, FileNotFoundError):
                             if verbose:
                                 print(f"Pure dark for ({filt}, {oe}, {exptime}) not found. "
@@ -426,30 +436,25 @@ class NICPolDir(NICPolDirMixin):
                                       end='... ')
                             try:
                                 mdarkpath = self.paths_skydark[(f"{objname}_sky", filt, oe, exptime)]
+                                mdark = load_ccd(mdarkpath)
                                 if verbose:
                                     print("Loaded successfully.")
                             except (KeyError, IndexError, FileNotFoundError):
                                 mdarkpath = None
+                                mdark = None
                                 if verbose:
                                     print("No dark file found. Turning off dark subtraction.")
 
-                    if mdarkpath is None:
-                        mdark = None
-                    else:
-                        mdark = load_ccd(mdarkpath)
-
                     try:
                         mfringepath = self.paths_skyfringe[(f"{objname}_sky", filt, oe, exptime)]
+                        mfringe = load_ccd(mfringepath)
                     except (KeyError, IndexError, FileNotFoundError):
                         mfringepath = None
+                        mfringe = None
                         if verbose:
                             print("No finge file found. Turning off fringe subtraction.")
 
-                    if mfringepath is None:
-                        mfringe = None
-                    else:
-                        mfringe = load_ccd(mfringepath)
-
+                    # == Reduce data ======================================================================= #
                     raw_fpaths = stack_FITS(summary_table=self.summary_raw, loadccd=False, verbose=False,
                                             type_key=["FILTER", "OBJECT", "OERAY", "EXPTIME"],
                                             type_val=[filt.upper(), objname, oe, exptime])
@@ -460,14 +465,6 @@ class NICPolDir(NICPolDirMixin):
                         rawccd = load_ccd(fpath)
                         # 1. Do Dark and Flat.
                         # 2. Subtract Fringe
-                        # 3. Do CRrej for HIGHLY POSITIVE values (remaining dark & CR).
-                        # 4. Do CRrej for HIGHLY NEGATIVE values (oversubtracted dark?)
-                        # Both CR rejections use sigfrac=0.5 (LACosmic's default) and objlim determined
-                        # empirically.
-                        # For positive rejection, it is better to be done before the fringe subtraction in
-                        # principle. However, when I tested, CRrej before fringe subtraction gave almost no
-                        # rejection of hot pixels, so I just did Fringe subtraction before positive CRrej.
-                        # ysBach 2020-08-06 16:17:03 (KST: GMT+09:00)
                         if mdark is not None or mflat is not None or mfringe is not None:
                             redccd = bdf_process(rawccd,
                                                  mdarkpath=mdarkpath,
@@ -489,40 +486,101 @@ class NICPolDir(NICPolDirMixin):
                                 objname += "Fr"
                             redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
 
-                        # positive CR rejection
-                        redccd = cr_reject_nic(redccd,
-                                               crrej_kw=dict(objlim=1, sigfrac=0.5),
-                                               verbose=verbose_crrej)
-                        objname += "C"
-                        redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
+                        else:
+                            redccd = rawccd.copy()
 
-                        # FRINGE subtraction
-                        # if mfringe is not None:
-                        #     redccd = bdf_process(redccd,
-                        #                          mfringe=mfringe,
-                        #                          mfringepath=mfringepath,
-                        #                          fringe_scale_fun=np.mean,
-                        #                          fringe_scale_section=self.sky_scale_section,
-                        #                          verbose_bdf=verbose_bdf)
-                        #     objname += "Fr"
-                        #     redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose
+                        # -- if crrej case:
+                        #   3. Do CRrej for HIGHLY POSITIVE values (remaining dark & CR).
+                        #   4. Do CRrej for HIGHLY NEGATIVE values (oversubtracted dark?)
+                        #   Both CR rejections use sigfrac=0.5 (LACosmic's default) and objlim determined
+                        #   empirically.
+                        #   For positive rejection, it is better to be done before the fringe subtraction in
+                        #   principle. However, when I tested, CRrej before fringe subtraction gave almost no
+                        #   rejection of hot pixels, so I just did Fringe subtraction before positive CRrej.
+                        #       ysBach 2020-08-06 16:17:03 (KST: GMT+09:00)
+                        if pixel_mask_method == "crrej":
+                            if verbose:
+                                print(f"{pixel_mask_method} will be used.")
+                            # positive CR rejection
+                            if do_crrej_pos:
+                                redccd = cr_reject_nic(redccd,
+                                                       crrej_kw=dict(objlim=1, sigfrac=0.5),
+                                                       verbose=verbose_crrej)
+                                objname += "C"
+                                redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
 
-                        # negative CR rejection
-                        redccd.data *= -1
-                        redccd = cr_reject_nic(redccd,
-                                               crrej_kw=dict(objlim=5, sigfrac=0.5),
-                                               verbose=verbose_crrej)
-                        redccd.data *= -1
-                        add_to_header(redccd.header, 'h', verbose=verbose_bdf,
-                                      s="Negated the pixel values to remove 'negative' CR, then restored.")
+                            # # FRINGE subtraction
+                            # if mfringe is not None:
+                            #     redccd = bdf_process(redccd,
+                            #                         mfringe=mfringe,
+                            #                         mfringepath=mfringepath,
+                            #                         fringe_scale_fun=np.mean,
+                            #                         fringe_scale_section=self.sky_scale_section,
+                            #                         verbose_bdf=verbose_bdf)
+                            #     objname += "Fr"
+                            #     redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose
 
-                        objname += "Cneg"
-                        redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
+                            # negative CR rejection
+                            if do_crrej_neg:
+                                add_to_header(redccd.header, 'h', verbose=verbose_bdf,
+                                              s="Negated the pixel values to remove 'negative' CR.")
+                                redccd.data *= -1
+                                redccd = cr_reject_nic(redccd,
+                                                       crrej_kw=dict(objlim=5, sigfrac=0.5),
+                                                       verbose=verbose_crrej)
+                                redccd.data *= -1
+                                add_to_header(redccd.header, 'h', verbose=verbose_bdf,
+                                              s="Negated the pixel values to restore the original sign.")
 
+                                objname += "Cneg"
+                                redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
+
+                        # -- if medfilt case:
+                        #   3. Calculate median-filtered frame.
+                        #   4. Calculate
+                        #       RATIO = original/medfilt,
+                        #       SIGRATIO = (original - medfilt) / mean(original)
+                        #   5. Replace pixels where (RATIO > medfilt_ratio) & (SIGRATIO > medfilt_sig_ratio)
+                        elif pixel_mask_method == "medfilt_bpm":
+                            if verbose:
+                                print(f"{pixel_mask_method} will be used.")
+
+                            res = medfilt_bpm(redccd,
+                                              std_section=self.sky_scale_section,
+                                              med_ratio_clip=med_ratio_clip,
+                                              std_ratio_clip=std_ratio_clip,
+                                              **medfilt_kw,
+                                              verbose=verbose_bpm,
+                                              full=True)
+                            redccd, posmask, negmask, med_filt, med_ratio, std_ratio = res
+
+                            tmpccd = redccd.copy()
+                            tmpccd.data = med_filt
+                            medfilt_objname = objname + "_MedFilt"
+                            _ = self._save(tmpccd, fpath, medfilt_objname, self.tmpred, verbose=verbose_bpm)
+
+                            tmpccd.data = med_ratio
+                            medratio_objname = objname + "_MedRatio"
+                            _ = self._save(tmpccd, fpath, medratio_objname, self.tmpred, verbose=verbose_bpm)
+
+                            tmpccd.data = std_ratio
+                            stdratio_objname = objname + "_StdRatio"
+                            _ = self._save(tmpccd, fpath, stdratio_objname, self.tmpred, verbose=verbose_bpm)
+
+                            tmpccd.data = (1*posmask + 2*negmask).astype(np.uint8)
+                            fullmask_objname = objname + "_MASK_pos1neg2"
+                            _ = self._save(tmpccd, fpath, fullmask_objname, self.tmpred, verbose=verbose_bpm)
+
+                        elif verbose:
+                            print(f"{pixel_mask_method} NOT understood !!")
+
+                        # -- Save final result
                         # Duplicated save as "Cneg" file above. The user may just DELETE tmpred folder in the
                         # future if it is unnecessary.
-                        redccd.header["OBJECT"] = objname_orig
-                        redccd.write(self.reddir/fpath.name, overwrite=True)
+                        _ = self._save(redccd, fpath, objname_orig, self.reddir, verbose=verbose)
+
+                        if verbose:
+                            print()
 
                     if verbose:
                         print()

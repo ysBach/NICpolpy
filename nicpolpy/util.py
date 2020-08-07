@@ -86,6 +86,8 @@ NIC_CRREJ_KEYS["sepmed"] = True
 NIC_CRREJ_KEYS['satlevel'] = np.inf
 NIC_CRREJ_KEYS['objlim'] = 5
 NIC_CRREJ_KEYS['sigfrac'] = 5
+NIC_CRREJ_KEYS['cleantype'] = 'median'
+
 
 FIND_KEYS = {'o': dict(ratio=1.0,  # 1.0: circular gaussian
                        sigma_radius=1.5,  # default values 1.5
