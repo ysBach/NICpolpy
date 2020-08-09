@@ -1,4 +1,3 @@
-import enum
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -8,11 +7,11 @@ from astropy.nddata import CCDData
 from astropy.stats import sigma_clip, sigma_clipped_stats
 from astropy.time import Time
 
-from ysfitsutilpy import (LACOSMIC_KEYS, CCDData_astype, add_to_header, crrej,
+from ysfitsutilpy import (CCDData_astype, add_to_header, crrej,
                           datahdr_parse, fitsxy2py, load_ccd,
-                          set_ccd_gain_rdnoise, trim_ccd)
+                          trim_ccd, medfilt_bpm)
 
-from .util import (FOURIERSECTS, GAIN, NICSECTS, RDNOISE, VERTICALSECTS, NIC_CRREJ_KEYS,
+from .util import (FOURIERSECTS, GAIN, NICSECTS, RDNOISE, VERTICALSECTS, NIC_CRREJ_KEYS, OBJSECTS,
                    fft_peak_freq, fit_sinusoids, infer_filter, multisin, split_oe)
 
 __all__ = ["reorganize_fits",
@@ -20,9 +19,9 @@ __all__ = ["reorganize_fits",
            "find_fourier_peaks"]
 
 
-def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', crrej_kw=None, fitting_sections=None,
+def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=None,
                     method='median', sigclip_kw=dict(sigma=2, maxiters=5),
-                    update_header=True, verbose_crrej=False, split=True, verbose=False):
+                    update_header=True, verbose_bpm=False, split=True, verbose=False):
     ''' Rename the original NHAO NIC image and convert to certain dtype.
     Parameters
     ----------
@@ -51,26 +50,21 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', crrej_kw=None, fitti
           _<OBJECT>_<EXPTIME:.1f>_<POL-AGL1:04.1f>_<INSROT:+04.0f>.fits``
 
     '''
-    def _sub_lr_save(part_l, part_r, crrej_kw):
-        # Extract filter and add gain and readnoise to header
-        set_ccd_gain_rdnoise(part_r, gain=GAIN[filt], rdnoise=RDNOISE[filt],
-                             verbose=verbose, update_header=True)
-        set_ccd_gain_rdnoise(part_l, gain=GAIN[filt], rdnoise=RDNOISE[filt],
-                             verbose=verbose, update_header=True)
-
-        # To include crrej HISTORY to part_r.header, link:
-        part_l.header = part_r.header.copy()  # Takes ~ 0.5 ms
-        part_l = cr_reject_nic(part_l, crrej_kw=crrej_kw, verbose=verbose_crrej, add_process=False)
+    def _sub_lr(part_l, part_r, filt):
+        # part_l = cr_reject_nic(part_l, crrej_kw=crrej_kw, verbose=verbose_crrej, add_process=False)
+        add_to_header(part_l.header, 'h', "Median filter badpixel masking (MBPM) algorithm run on left half",
+                      verbose=verbose_bpm)
+        part_l = medfilt_bpm(part_l,  med_ratio_clip=[0., 2], std_ratio_clip=[-4, 4],
+                             std_section=OBJSECTS(right_half=True)[filt][0])
+        # std section above means the rectangular FOV of o-ray, shifted by 512 pixel to -x direction
         part_r.header = part_l.header
 
-        # By forcing it to int (similar to np.floor), it'll slightly contribute removing CR:
         _t = Time.now()
-        part_r.data -= part_l.data.astype(dtype)
-        add_to_header(part_r.header, 'h',
-                      ("Left part (vertical subtracted and CR-rejected) is subtracted from the right part "
-                       "(only vertical subtracted)"),
-                      t_ref=_t, verbose=verbose
-                      )
+        part_r.data -= part_l.data
+        part_r.data = part_r.data.astype(dtype)
+        add_to_header(part_r.header, 'h', t_ref=_t, verbose=verbose_bpm,
+                      s=("Left part (vertical subtracted and MBPM) is subtracted from the right part "
+                         + "(only vertical subtracted)"))
         return part_r
 
     def _save(ccd, fstem):
@@ -160,34 +154,30 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', crrej_kw=None, fitti
                                 fitting_sections=fitting_sections,
                                 method=method,
                                 sigclip_kw=sigclip_kw,
-                                dtype='int16',  # By using int, it mimics lower-medianing!!!
+                                dtype='float32',
                                 return_pattern=False,
                                 update_header=update_header,
                                 verbose=verbose)
 
     if polmode:
         filt = infer_filter(ccd_nbit, filt=None, verbose=verbose)
-        # Better to use default LACOSMIC because we want to strongly remove
-        # not only CR but also hot pixels.
-        if crrej_kw is None:
-            crrej_kw = LACOSMIC_KEYS.copy()
-            crrej_kw["sepmed"] = True
 
         if split:
             ccds_l = split_oe(ccd_nbit, filt=filt, right_half=True, verbose=verbose)
             ccds_r = split_oe(ccd_nbit, filt=filt, right_half=False, verbose=verbose)
-
+            ccd_nbit = []
             for i, oe in enumerate(['o', 'e']):
                 part_l = ccds_l[i]
                 part_r = ccds_r[i]
-                ccd_nbit = _sub_lr_save(part_l, part_r, crrej_kw)
-                _save(ccd_nbit, outstem + f"_{oe:s}")
+                _ccd_nbit = _sub_lr(part_l, part_r, filt)
+                _save(_ccd_nbit, outstem + f"_{oe:s}")
+                ccd_nbit.append(_ccd_nbit)
 
         else:
             # left half and right half
             part_l = trim_ccd(ccd_nbit, NICSECTS["left"], verbose=verbose)
             part_r = trim_ccd(ccd_nbit, NICSECTS["right"], verbose=verbose)
-            ccd_nbit = _sub_lr_save(part_l, part_r, crrej_kw)
+            ccd_nbit = _sub_lr(part_l, part_r, filt)
 
             ccd_nbit = part_r.copy()
             _save(ccd_nbit, outstem)
@@ -233,9 +223,6 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, add_process=Tru
     will contain the mask from cosmic-ray detection.
     """
     crkw = NIC_CRREJ_KEYS.copy()
-    if crrej_kw is not None:
-        for k, v in crrej_kw.items():
-            crkw[k] = v
 
     try:
         gain = ccd.gain.value
@@ -247,6 +234,10 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, add_process=Tru
 
     crkw['gain'] = gain
     crkw['rdnoise'] = rdnoise
+
+    if crrej_kw is not None:
+        for k, v in crrej_kw.items():
+            crkw[k] = v
 
     nccd, crmask = crrej(
         ccd,
