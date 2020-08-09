@@ -52,19 +52,26 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
     '''
     def _sub_lr(part_l, part_r, filt):
         # part_l = cr_reject_nic(part_l, crrej_kw=crrej_kw, verbose=verbose_crrej, add_process=False)
-        add_to_header(part_l.header, 'h', "Median filter badpixel masking (MBPM) algorithm run on left half",
-                      verbose=verbose_bpm)
+        add_to_header(part_l.header, 'h', verbose=verbose_bpm,
+                      s=("Median filter badpixel masking (MBPM) algorithm started running on the left half "
+                         + 'to remove hot pixels on left; a prerequisite for the right frame - left frame" '
+                         + "technique to remove wavy pattern."))
         part_l = medfilt_bpm(part_l,  med_ratio_clip=[0., 2], std_ratio_clip=[-4, 4],
                              std_section=OBJSECTS(right_half=True)[filt][0])
-        # std section above means the rectangular FOV of o-ray, shifted by 512 pixel to -x direction
+        # std section above means the rectangular FOV of o-ray, shifted
+        # by 512 pixel to -x direction
+
+        # To keep the header log of medfilt_bpm, override the header,
+        # althought the Trim-related history will be destroyed.
         part_r.header = part_l.header
 
         _t = Time.now()
         part_r.data -= part_l.data
         part_r.data = part_r.data.astype(dtype)
         add_to_header(part_r.header, 'h', t_ref=_t, verbose=verbose_bpm,
-                      s=("Left part (vertical subtracted and MBPM) is subtracted from the right part "
+                      s=("Left part (vertical subtracted and MBPMed) is subtracted from the right part "
                          + "(only vertical subtracted)"))
+        add_to_header(part_r.header, 'h', verbose=verbose_bpm, s="{:=^72s}".format(' Done '), fmt=None)
         return part_r
 
     def _save(ccd, fstem):
@@ -76,7 +83,7 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
             ccd.write(outpath, overwrite=True, output_verify='fix')
         except FileNotFoundError:
             outpath.parent.mkdir(parents=True)
-            ccd_nbit.write(outpath, overwrite=True, output_verify='fix')
+            ccd.write(outpath, overwrite=True, output_verify='fix')
 
     fpath = Path(fpath)
     ccd_orig = load_ccd(fpath)
@@ -84,13 +91,16 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
     ccd_nbit = ccd_orig.copy()
     ccd_nbit = CCDData_astype(ccd_nbit, dtype=dtype)
 
+    add_to_header(ccd_nbit.header, 'h', verbose=verbose, fmt=None,
+                  s="{:=^72s}".format(' Basic preprocessing start '))
+
     if ccd_orig.dtype != ccd_nbit.dtype:
         add_to_header(ccd_nbit.header, 'h', f"Changed dtype (BITPIX): {ccd_orig.dtype} to {ccd_nbit.dtype}",
                       t_ref=_t, verbose=verbose)
 
     # == First, check if identical ========================================================================= #
-    # It takes < ~20 ms on MBP 2018 15" (i7 2.6 GHz, 16GB 2400MHz DDR 4 on macOS 10.14.6)
-    # ysBach 2020-05-15 16:06:08 (KST: GMT+09:00)
+    # It takes < ~20 ms on MBP 2018 15" (i7 2.6 GHz, 16GB 2400MHz DDR 4
+    # on macOS 10.14.6) ysBach 2020-05-15 16:06:08 (KST: GMT+09:00)
     np.testing.assert_almost_equal(
         ccd_orig.data - ccd_nbit.data,
         np.zeros(ccd_nbit.data.shape)
@@ -110,7 +120,11 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
 
     # == Set output stem =================================================================================== #
     hdr = ccd_nbit.header
-    yyyymmdd = hdr["DATE_LT"].replace("-", "")
+    # This yyyymmdd is neither JST (Japan) nor UT... Maybe TELINFO? But
+    # let me just guess it from the fname..
+    yyyymmdd = '20' + fpath.stem.split('_')[0][1:]
+
+    # yyyymmdd = hdr["DATE_LT"].replace("-", "")
     # try:
     #     # Start of exposure, if exists
     #     yyyymmdd = Time(hdr['DATE-OBS'], format='isot').strftime('%Y%m%d')
@@ -239,15 +253,13 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, add_process=Tru
         for k, v in crrej_kw.items():
             crkw[k] = v
 
-    nccd, crmask = crrej(
-        ccd,
-        mask=mask,
-        **crkw,
-        propagate_crmask=False,
-        update_header=update_header,
-        add_process=add_process,
-        verbose=verbose
-    )
+    nccd, crmask = crrej(ccd,
+                         mask=mask,
+                         **crkw,
+                         propagate_crmask=False,
+                         update_header=update_header,
+                         add_process=add_process,
+                         verbose=verbose)
 
     if full:
         return nccd, crmask, crrej_kw
@@ -335,8 +347,8 @@ def vertical_correct(ccd, fitting_sections=None, method='median', sigclip_kw=dic
 
     if update_header and hdr is not None:
         # add as history
-        s = (f"Vertical pattern subtracted using {fitting_sections} by {methodstr} with {clipstr}")
-        add_to_header(hdr, 'h', s, verbose=verbose, t_ref=_t)
+        add_to_header(hdr, 'h', verbose=verbose, t_ref=_t,
+                      s=f"Vertical pattern subtracted using {fitting_sections} by {methodstr} with {clipstr}")
 
     try:
         nccd = CCDData(data=vsub, header=hdr)
@@ -366,8 +378,8 @@ def lrsubtract(ccd, fitting_sections=["[:, 50:100]", "[:, 924:974]"], method='me
     nccd.data[:, i_half:] -= nccd.data[:, :i_half]
     if update_header:
         # add as history
-        s = f"Subtracted left half ({i_half} columns) from the right half."
-        add_to_header(nccd.header, 'h', s, t_ref=_t, verbose=verbose)
+        add_to_header(nccd.header, 'h', t_ref=_t, verbose=verbose,
+                      s=f"Subtracted left half ({i_half} columns) from the right half.")
     # nccd = trim_image(nccd, fits_section=f"[{i_half + 1}:, :]")
     return nccd
 
