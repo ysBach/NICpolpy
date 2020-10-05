@@ -5,24 +5,37 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 import sep
+
+
 from astropy.io import fits
 from astropy.modeling.functional_models import Gaussian2D
-from astropy.nddata import CCDData, Cutout2D, VarianceUncertainty
+from astropy.nddata import CCDData, Cutout2D, VarianceUncertainty, Cutout2D
 from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
+from astropy.visualization import ZScaleInterval, ImageNormalize, SqrtStretch, simple_norm
+
+from photutils.aperture import CircularAnnulus, CircularAperture
 
 import imcombinepy as imc
 from ysfitsutilpy import (LACOSMIC_KEYS, CCDData_astype, add_to_header, bdf_process, bezel_ccd, errormap,
                           fitsxy2py, imcopy, load_ccd, propagate_ccdmask, set_ccd_gain_rdnoise, stack_FITS,
-                          trim_ccd, medfilt_bpm)
-from ysphotutilpy import (apphot_annulus, ellip_ap_an, fit_Gaussian2D, sep_back, sep_extract)
+                          trim_ccd, medfilt_bpm, bezel_ccd)
+from ysphotutilpy import (apphot_annulus, ellip_ap_an, fit_Gaussian2D, sep_back, sep_extract, apphot_annulus,
+                          sky_fit, LinPolOE4)
 
 from .preproc import (cr_reject_nic, find_fourier_peaks, fit_fourier, vertical_correct)
 from .util import (DARK_PATHS, FLAT_PATHS, FOURIERSECTS, GAIN, MASK_PATHS, OBJSECTS, OBJSLICES, RDNOISE,
-                   USEFUL_KEYS, VERTICALSECTS, infer_filter, split_oe, summary_nic)
+                   USEFUL_KEYS, VERTICALSECTS, infer_filter, split_oe, summary_nic, parse_fpath)
+
+try:
+    import fitsio
+    HAS_FITSIO = True
+except ImportError:
+    warn("python version of fitsio is strongly recommended (https://github.com/esheldon/fitsio/tree/master/)")
+    HAS_FITSIO = False
 
 __all__ = [
-    "NICPolDir",
+    "NICPolDir", "NICPolPhot", "read_pols",
     "NICPolImage"]
 
 
@@ -117,15 +130,23 @@ class NICPolDirMixin:
         def _set_fname(original_path, object_name, combined=False):
             ''' If combined, COUNTER, POL-AGL1, INSROT are meaningless, so remove these.
             '''
-            splitted = Path(original_path).name.split('_')
-            del splitted[3:-4]  # remove both "Earthshine" and "Earthshine_sky"
+            es = parse_fpath(original_path)
             if combined:
-                splitted.pop(2)  # remove counter
-                del splitted[-3:-1]  # remove POL-AGL1, INSROT
-                splitted.insert(2, object_name)
+                fstem = '_'.join([es['filt'], es['yyyymmdd'], object_name, es['EXPTIME'], es['oe']])
             else:
-                splitted.insert(3, object_name)
-            return "_".join(splitted)
+                es['OBJECT'] = object_name
+                fstem = '_'.join(es.values())
+            return fstem + '.fits'
+
+            # splitted = Path(original_path).name.split('_')
+            # del splitted[3:-4]  # remove both "Earthshine" and "Earthshine_sky"
+            # if combined:
+            #     splitted.pop(2)  # remove counter
+            #     del splitted[-3:-1]  # remove POL-AGL1, INSROT
+            #     splitted.insert(2, object_name)
+            # else:
+            #     splitted.insert(3, object_name)
+            # return "_".join(splitted)
 
         ccd.header["OBJECT"] = object_name
         newpath = savedir/_set_fname(original_path, object_name, combined=combined)
@@ -157,6 +178,81 @@ class NICPolDirMixin:
             mflat = 1
         return mflat, mflatpath
 
+    @staticmethod
+    def _find_obj(arr, var,
+                  thresh_tests=[30, 20, 10, 6, 5, 4, 3], bezel_x=(30, 30), bezel_y=(180, 120),
+                  box_size=(64, 64), filter_size=(12, 12), deblend_cont=1,
+                  minarea=314,
+                  **extract_kw):
+        """
+        Note
+        ----
+        This includes ``sep``'s ``extract`` and ``background``.
+        Equivalent processes in photutils may include ``detect_sources``
+        and ``source_properties``, and ``Background2D``, respectively.
+
+        Parameters
+        ----------
+        thresh : float, optional.
+            The SNR threshold. It is not an absolute pixel value because
+            internally the ``self.err_o`` and ``self.err_e`` will be
+            used.
+
+        bezel_x, bezel_y : int, float, list of such, optional.
+            The x and y bezels, in ``[lower, upper]`` convention.
+
+        box_size : int or array-like (int) optional.
+            The background smooting box size. Default is ``(64, 64)``
+            for NIC. **Note**: If array-like, order must be ``[height,
+            width]``, i.e., y and x size.
+
+        filter_size : int or array-like (int) optional.
+            The 2D median filter size. Default is ``(12, 12)`` for NIC.
+            **Note**: If array-like, order must be ``[height, width]``,
+            i.e., y and x size.
+
+        minarea : int, optional
+            Minimum number of pixels required for an object. Default is
+            100 for NIC.
+
+        deblend_cont : float, optional
+            Minimum contrast ratio used for object deblending. To
+            entirely disable deblending, set to 1.0.
+
+        # gauss_fbox : int, float, array-like of such, optional.
+        #     The fitting box size to fit a Gaussian2D function to the
+        #     objects found by ``sep``. This is done to automatically set
+        #     aperture sizes of the object.
+
+        Returns
+        -------
+        bkg, obj, segm
+
+        """
+        bkg_kw = dict(maskthresh=0.0, filter_threshold=0.0, box_size=box_size, filter_size=filter_size)
+        bkg = sep_back(arr, **bkg_kw)
+        sepv = sep.__version__
+        s_bkg = f"Background estimated from sep (v {sepv}) with {bkg_kw}."
+
+        thresh_tests = np.sort(np.atleast_1d(thresh_tests))[::-1]
+        for thresh in thresh_tests:
+            ext_kw = dict(thresh=thresh, minarea=minarea, deblend_cont=deblend_cont,
+                          bezel_x=bezel_x, bezel_y=bezel_y, **extract_kw)
+
+            obj, seg = sep_extract(arr, bkg=bkg, var=var, **ext_kw)
+            nobj = len(obj)
+            if nobj < 1:
+                continue
+            else:
+                s_obj = f"Objects found from sep (v {sepv}) with {ext_kw}."
+                break
+
+        found = nobj >= 1
+        if not found:
+            s_obj = f"NO object found from sep (v {sepv}) with {ext_kw}."
+
+        return bkg, obj, seg, s_bkg, s_obj, found
+
 
 class NICPolDir(NICPolDirMixin):
     def __init__(self, location, rawdir="raw", caldir="calib", tmpcal="tmp_calib", tmpred="tmp_reduc",
@@ -178,7 +274,7 @@ class NICPolDir(NICPolDirMixin):
         self.tmpred.mkdir(parents=True, exist_ok=True)
 
         self.flatdir = Path(flatdir) if flatdir is not None else None
-        if not self.flatdir.exists():
+        if self.flatdir is not None and if not self.flatdir.exists():
             raise FileNotFoundError("Flat directory not found.")
 
         self.keys = USEFUL_KEYS + ["OERAY"]
@@ -217,9 +313,29 @@ class NICPolDir(NICPolDirMixin):
         else:
             self.summary_dark = None
 
-    def prepare_calib(self, dark_min=2., sky_scale_section="[20:130, 40:140]", fringe_min_value=0.0,
+    def prepare_calib(self, dark_min=10., sky_scale_section="[20:130, 40:140]", fringe_min_value=0.0,
                       flat_min_value=0.0,
+                      skydark_medfilt_bpm_kw=dict(size=5, std_section="[40:100, 40:140]", std_model='std',
+                                                  med_sub_clip=[None, 10], med_rat_clip=None,
+                                                  std_rat_clip=[None, 3]),
                       verbose=True, verbose_combine=False, verbose_bdf=False, verbose_crrej=False):
+        '''
+        Parameters
+        ----------
+        skydark_medfilt_bpm_kw : dict, optional.
+            The median filtered bad pixel masking algorithm (MBPM)
+            parameters if SKYDARK must be extracted. The lower clips are
+            all `None` so that the SKYDARK frame contains **no** pixel
+            smaller than local median minus ``med_sub_clip[1]``.
+
+        fringe_min_value : float, optional.
+            All pixels smaller than this value in the fringe map
+            (super-bad pixels) are replaced with this. Setting
+            ``fringe_min_value=0`` removes all negative pixels from
+            fringe, so the fringe-subtracted frame will contain negative
+            pixels (super-bad pixels) unchanged, so that easily replaced
+            in preprocessing.
+        '''
         self.dark_min = dark_min
         self.sky_scale_section = sky_scale_section
         self.sky_scale_slice = fitsxy2py(self.sky_scale_section)
@@ -230,128 +346,12 @@ class NICPolDir(NICPolDirMixin):
         self.fringe_min_value = fringe_min_value
         self.flat_min_value = flat_min_value
 
-        crrej_kw = None
         print(f"Output and intermediate files are saved to {self.caldir} and {self.tmpcal}.")
         if self.flatdir is None:
             print("Better to specify flat files by flatdir.")
 
         if verbose:
             print("Estimating DARK from sky frames if exists... ")
-
-        for filt, oe in product('JHK', 'oe'):
-            mflat, mflatpath = self._set_mflat(self.summary_flat, filt, oe, self.flatdir, self.flat_min_value)
-            self.paths_flat[(filt, oe)] = mflatpath
-            for skyname, skydict in self.skydata.items():
-                for exptime in skydict['exptimes']:
-                    sky_fpaths = stack_FITS(summary_table=skydict['summary'], loadccd=False, verbose=verbose,
-                                            type_key=["FILTER", "OERAY", "EXPTIME"],
-                                            type_val=[filt.upper(), oe, exptime])
-
-                    # == Estimate DARK from sky frames ===================================================== #
-                    skycomb_paths = []
-                    sky_dark_paths = []
-                    for fpath in sky_fpaths:
-                        _t = Time.now()
-                        sky = load_ccd(fpath)
-                        # Sky / Flat
-                        # flat division to prevent artificial CR rejection:
-                        sky_f = sky.copy()
-                        sky_f.data = sky.data/mflat
-                        sky_f, _ = self._save(sky_f, fpath, f"{skyname}_FLAT", self.tmpcal)
-
-                        # (Sky/Flat)_cr
-                        sky_f_cr = cr_reject_nic(sky_f, crrej_kw=crrej_kw, verbose=verbose_crrej)
-                        sky_f_cr, _ = self._save(sky_f_cr, fpath, f"{skyname}_FLAT_CRREJ", self.tmpcal)
-
-                        # (Sky/Flat)_cr * Flat
-                        sky_cr = sky_f_cr.copy()
-                        sky_cr.data *= mflat
-                        sky_cr, _ = self._save(sky_cr, fpath, f"{skyname}_FLAT_CRREJ_DEFLATTED", self.tmpcal)
-
-                        # Dark ~ Sky - (Sky/Flat)_cr * Flat
-                        sky_dark = sky_f_cr.copy()  # retain CRREJ header info
-                        sky_dark.data = sky.data - sky_f_cr.data*mflat
-                        sky_dark.data[sky_dark.data < dark_min] = 0
-                        add_to_header(sky_dark.header, 'h',
-                                      ("Dark estimated by combine(sky - (sky/flat)_cr*flat) "
-                                       + f"and dark_min of {dark_min} applied."),
-                                      t_ref=_t, verbose=verbose_combine)
-                        _, sky_dark_path = self._save(sky_dark, fpath, f"{skyname}_SKYDARK", self.tmpcal)
-                        sky_dark_paths.append(sky_dark_path)
-
-                    # == Combine estimated DARK ============================================================ #
-                    if verbose:
-                        print("    Combine the estimated DARK from _sky frames", end='... ')
-
-                    _t = Time.now()
-                    comb_sky_dark = imc.fitscombine(sky_dark_paths,
-                                                    ombine='med',
-                                                    reject='sc',
-                                                    sigma=3,
-                                                    verbose=verbose_combine)
-                    add_to_header(comb_sky_dark.header, 'h', "Combined FITS files",
-                                  t_ref=_t, verbose=verbose_combine)
-                    comb_sky_dark, comb_sky_dark_path = self._save(comb_sky_dark, sky_fpaths[0],
-                                                                   f"{skyname}_SKYDARK", self.caldir,
-                                                                   combined=True)
-                    self.paths_skydark[(skyname, filt, oe, exptime)] = comb_sky_dark_path
-
-                    if verbose:
-                        print("Done.")
-
-                    # == Make fringe frames for each sky =================================================== #
-                    if verbose:
-                        print("    Make and combine the SKYFRINGES (flat corrected) from _sky frames",
-                              end='...')
-
-                    for fpath in sky_fpaths:
-                        sky = load_ccd(fpath)
-                        # give mdark/mflat so that the code does not read the FITS files repeatedly:
-                        sky = bdf_process(sky,
-                                          mdark=comb_sky_dark,
-                                          mflat=CCDData(mflat, unit='adu'),
-                                          mdarkpath=comb_sky_dark_path,
-                                          mflatpath=mflatpath,
-                                          verbose_bdf=verbose_bdf,
-                                          verbose_crrej=verbose_crrej)
-                        sky, sky_tocomb_path = self._save(sky, fpath, f"{skyname}_FRINGE", self.tmpcal)
-                        skycomb_paths.append(sky_tocomb_path)
-
-                    # == Combine sky fringes =============================================================== #
-                    # combine dark-subtracted and flat-corrected sky frames to get the fringe pattern by sky
-                    # emission lines:
-                    _t = Time.now()
-                    logpath = self.caldir/f"{filt.lower()}_{skyname}_{exptime:.1f}_{oe}_combinelog.csv"
-                    comb_sky_fringe = imc.fitscombine(skycomb_paths,
-                                                      combine='med',
-                                                      reject='sc',
-                                                      sigma=3,
-                                                      scale='avg',
-                                                      scale_to_0th=False,
-                                                      scale_section=sky_scale_section,
-                                                      verbose=verbose_combine,
-                                                      logfile=logpath)
-                    add_to_header(comb_sky_fringe.header, 'h', "Combined sky fringe FITS files",
-                                  t_ref=_t, verbose=verbose_combine)
-
-                    # Normalize using the section
-                    _t = Time.now()
-                    norm_value = np.mean(comb_sky_fringe.data[self.sky_scale_slice])
-                    comb_sky_fringe.data /= norm_value
-                    comb_sky_fringe.data[comb_sky_fringe.data < self.fringe_min_value] = 0
-                    add_to_header(comb_sky_fringe.header, 'h',
-                                  "Normalized by mean of NORMSECT (NORMVALU), replaced value < FRINMINV to 0",
-                                  t_ref=_t, verbose=verbose_combine)
-                    comb_sky_fringe.header["NORMSECT"] = sky_scale_section
-                    comb_sky_fringe.header["NORMVALU"] = norm_value
-                    comb_sky_fringe.header["FRINMINV"] = self.fringe_min_value
-
-                    _, comb_sky_fringe_path = self._save(comb_sky_fringe, skycomb_paths[0],
-                                                         f"{skyname}_SKYFRINGE", self.caldir, combined=True)
-                    self.paths_skyfringe[(skyname, filt, oe, exptime)] = comb_sky_fringe_path
-
-                    if verbose:
-                        print("Done.")
 
         # == Combine dark if DARK exists =================================================================== #
         if verbose:
@@ -372,7 +372,7 @@ class NICPolDir(NICPolDirMixin):
                                        verbose=verbose_combine)
                 comb.data[comb.data < dark_min] = 0
                 add_to_header(comb.header, 'h', f"Images combined and dark_min {dark_min} applied.",
-                              t_ref=_t, verbose=verbose)
+                              t_ref=_t, verbose=verbose_combine)
                 _, comb_dark_path = self._save(comb, dark_fpaths[0], "DARK", self.caldir, combined=True)
                 self.paths_puredark[(filt, oe, exptime)] = comb_dark_path
         elif verbose:
@@ -381,12 +381,150 @@ class NICPolDir(NICPolDirMixin):
         if verbose:
             print("Done.")
 
-    def preproc(self, reddir="reduced", prefer_skydark=False, pixel_mask_method="medfilt_bpm",
-                med_ratio_clip=[0.5, 2], std_ratio_clip=[-3, 5],
-                medfilt_kw=dict(cadd=1.e-10, size=5, mode='reflect', cval=0.0,
-                                origin=0, sigma=3., maxiters=5, std_ddof=1, dtype='float32'),
+        # == Reduce SKY frames if exists =================================================================== #
+        for filt, oe in product('JHK', 'oe'):
+            mflat, mflatpath = self._set_mflat(self.summary_flat, filt, oe, self.flatdir, self.flat_min_value)
+            self.paths_flat[(filt, oe)] = mflatpath
+            for skyname, skydict in self.skydata.items():
+                for exptime in skydict['exptimes']:
+                    sky_fpaths = stack_FITS(summary_table=skydict['summary'], loadccd=False, verbose=verbose,
+                                            type_key=["FILTER", "OERAY", "EXPTIME"],
+                                            type_val=[filt.upper(), oe, exptime])
+
+                    skycomb_paths = []
+                    try:
+                        print(self.paths_puredark[(filt, oe, exptime)])
+                        mdarkpath = self.paths_puredark[(filt, oe, exptime)]
+                    except (KeyError, IndexError):
+                        # == Estimate DARK from sky (SKYDARK) if no PUREDARK found ========================= #
+                        sky_dark_paths = []
+                        for fpath in sky_fpaths:
+                            _t = Time.now()
+                            sky = load_ccd(fpath)
+                            add_to_header(sky.header, 'h', verbose=verbose_bdf, fmt=None,
+                                          s="{:=^72s}".format(' Estimating DARK from this sky frame '))
+                            # Sky / Flat
+                            # flat division to prevent artificial CR rejection:
+                            sky_f = sky.copy()
+                            sky_f.data = sky.data/mflat
+                            sky_f, _ = self._save(sky_f, fpath, f"{skyname}_FLAT", self.tmpcal)
+
+                            # (Sky/Flat)_cr
+                            # sky_f_cr = cr_reject_nic(sky_f, crrej_kw=crrej_kw, verbose=verbose_crrej)
+                            sky_f_cr = medfilt_bpm(sky_f, **skydark_medfilt_bpm_kw)
+                            sky_f_cr, _ = self._save(sky_f_cr, fpath, f"{skyname}_FLAT_CRREJ", self.tmpcal)
+
+                            # (Sky/Flat)_cr * Flat
+                            sky_cr = sky_f_cr.copy()
+                            sky_cr.data *= mflat
+                            sky_cr, _ = self._save(sky_cr, fpath, f"{skyname}_FLAT_CRREJ_DEFLATTED",
+                                                   self.tmpcal)
+
+                            # Dark ~ Sky - (Sky/Flat)_cr * Flat
+                            sky_dark = sky_f_cr.copy()  # retain CRREJ header info
+                            sky_dark.data = sky.data - sky_f_cr.data*mflat
+                            sky_dark.data[sky_dark.data < dark_min] = 0
+                            add_to_header(sky_dark.header, 'h',
+                                          ("Dark from this frame estimated by sky - (sky/flat)_cr*flat "
+                                           + f"and replaced pixel value < {dark_min} = 0."),
+                                          t_ref=_t, verbose=verbose_combine)
+
+                            add_to_header(sky_dark.header, 'h', verbose=verbose_bdf, fmt=None,
+                                          s="{:=^72s}".format(' Similar SKYDARK frames will be combined '))
+
+                            _, sky_dark_path = self._save(sky_dark, fpath, f"{skyname}_SKYDARK", self.tmpcal)
+                            sky_dark_paths.append(sky_dark_path)
+
+                        # == Combine estimated SKYDARK ===================================================== #
+                        if verbose:
+                            print("    Combine the estimated DARK from _sky frames", end='... ')
+
+                        _t = Time.now()
+                        comb_sky_dark = imc.fitscombine(sky_dark_paths,
+                                                        ombine='med',
+                                                        reject='sc',
+                                                        sigma=3,
+                                                        verbose=verbose_combine)
+                        add_to_header(comb_sky_dark.header, 'h', verbose=verbose_bdf, fmt=None,
+                                      s="{:-^72s}".format(' DONE'))
+                        comb_sky_dark, comb_sky_dark_path = self._save(comb_sky_dark, sky_fpaths[0],
+                                                                       f"{skyname}_SKYDARK", self.caldir,
+                                                                       combined=True)
+                        self.paths_skydark[(skyname, filt, oe, exptime)] = comb_sky_dark_path
+                        mdarkpath = comb_sky_dark_path
+
+                        if verbose:
+                            print("Done.")
+
+                    # == Make fringe frames for each sky =================================================== #
+                    if verbose:
+                        print("    Make and combine the SKYFRINGES (flat corrected) from _sky frames",
+                              end='...')
+
+                    mdark = load_ccd(mdarkpath)
+                    for fpath in sky_fpaths:
+                        sky = load_ccd(fpath)
+                        # give mdark/mflat so that the code does not read the FITS files repeatedly:
+                        add_to_header(sky.header, 'h', verbose=verbose_bdf, fmt=None,
+                                      s="{:=^72s}".format(' Estimating FRINGE from this sky frame '))
+
+                        sky_fringe = bdf_process(sky,
+                                                 mdark=mdark,
+                                                 mflat=CCDData(mflat, unit='adu'),
+                                                 mdarkpath=mdarkpath,
+                                                 mflatpath=mflatpath,
+                                                 verbose_bdf=verbose_bdf,
+                                                 verbose_crrej=verbose_crrej)
+                        add_to_header(sky_fringe.header, 'h', verbose=verbose_bdf, fmt=None,
+                                      s="{:=^72s}".format(' Similar SKYFRINGE frames will be combined '))
+
+                        sky_fringe, sky_tocomb_path = self._save(sky_fringe, fpath, f"{skyname}_FRINGE",
+                                                                 self.tmpcal)
+                        skycomb_paths.append(sky_tocomb_path)
+
+                    # == Combine sky fringes =============================================================== #
+                    # combine dark-subtracted and flat-corrected sky frames to get the fringe pattern by sky
+                    # emission lines:
+                    _t = Time.now()
+                    logpath = self.caldir/f"{filt.lower()}_{skyname}_{exptime:.1f}_{oe}_combinelog.csv"
+                    comb_sky_fringe = imc.fitscombine(skycomb_paths,
+                                                      combine='med',
+                                                      reject='sc',
+                                                      sigma=3,
+                                                      scale='avg',
+                                                      scale_to_0th=False,
+                                                      scale_section=sky_scale_section,
+                                                      verbose=verbose_combine,
+                                                      logfile=logpath)
+                    # FRINGE must not be smoothed as remaining DARK signal may reside here.
+
+                    # Normalize using the section
+                    _t = Time.now()
+                    norm_value = np.mean(comb_sky_fringe.data[self.sky_scale_slice])
+                    comb_sky_fringe.data /= norm_value
+                    comb_sky_fringe.data[comb_sky_fringe.data < self.fringe_min_value] = 0
+                    add_to_header(comb_sky_fringe.header, 'h',
+                                  "Normalized by mean of NORMSECT (NORMVALU), replaced value < FRINMINV to 0",
+                                  t_ref=_t, verbose=verbose_combine)
+                    comb_sky_fringe.header["NORMSECT"] = sky_scale_section
+                    comb_sky_fringe.header["NORMVALU"] = norm_value
+                    comb_sky_fringe.header["FRINMINV"] = self.fringe_min_value
+                    add_to_header(comb_sky_fringe.header, 'h', verbose=verbose_bdf,
+                                  s="{:-^72s}".format(' DONE'), fmt=None)
+
+                    _, comb_sky_fringe_path = self._save(comb_sky_fringe, skycomb_paths[0],
+                                                         f"{skyname}_SKYFRINGE", self.caldir, combined=True)
+                    self.paths_skyfringe[(skyname, filt, oe, exptime)] = comb_sky_fringe_path
+
+                    if verbose:
+                        print("Done.")
+
+    def preproc(self, reddir="reduced", prefer_skydark=False,
+                med_rat_clip=[0.5, 2], std_rat_clip=[-3, 3], bezel_x=[20, 20], bezel_y=[20, 20],
+                medfilt_kw=dict(med_sub_clip=None, size=5),
                 do_crrej_pos=True, do_crrej_neg=True,
-                verbose=True, verbose_bdf=False, verbose_bpm=False, verbose_crrej=False):
+                verbose=True, verbose_bdf=False, verbose_bpm=False, verbose_crrej=False, verbose_phot=False
+                ):
         '''
         '''
         self.reddir = self.location/reddir
@@ -397,6 +535,8 @@ class NICPolDir(NICPolDirMixin):
 
         for filt, oe in product('JHK', 'oe'):
             mflatpath = self.paths_flat[(filt, oe)]
+            gain = GAIN[filt]
+            rdnoise = RDNOISE[filt]
             if mflatpath is None:
                 mflat = None
             else:
@@ -454,7 +594,7 @@ class NICPolDir(NICPolDirMixin):
                         if verbose:
                             print("No finge file found. Turning off fringe subtraction.")
 
-                    # == Reduce data ======================================================================= #
+                    # == Reduce data and do photometry ===================================================== #
                     raw_fpaths = stack_FITS(summary_table=self.summary_raw, loadccd=False, verbose=False,
                                             type_key=["FILTER", "OBJECT", "OERAY", "EXPTIME"],
                                             type_val=[filt.upper(), objname, oe, exptime])
@@ -463,6 +603,10 @@ class NICPolDir(NICPolDirMixin):
                         if verbose:
                             print(fpath)
                         rawccd = load_ccd(fpath)
+                        set_ccd_gain_rdnoise(rawccd, gain=gain, rdnoise=rdnoise)
+                        add_to_header(rawccd.header, 'h', verbose=verbose_bdf,
+                                      s="{:=^72s}".format(' Preprocessing start '), fmt=None)
+                        # set_ccd_gain_rdnoise(rawccd)
                         # 1. Do Dark and Flat.
                         # 2. Subtract Fringe
                         if mdark is not None or mflat is not None or mfringe is not None:
@@ -476,114 +620,389 @@ class NICPolDir(NICPolDirMixin):
                                                  fringe_scale_fun=np.mean,
                                                  fringe_scale_section=self.sky_scale_section,
                                                  verbose_bdf=verbose_bdf)
-                            objname_orig = redccd.header['OBJECT']
-                            objname = f"{redccd.header['OBJECT']}"
+                            objname = redccd.header['OBJECT']
+                            proc = ''
                             if mdark is not None:
-                                objname += "D"
+                                proc += "D"
                             if mflat is not None:
-                                objname += "F"
+                                proc += "F"
                             if mfringe is not None:
-                                objname += "Fr"
-                            redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
+                                proc += "Fr"
 
+                            if proc != '':
+                                objname = '_'.join([objname, proc])
+
+                            redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
+                            objname_proc = objname
                         else:
                             redccd = rawccd.copy()
 
-                        # -- if crrej case:
-                        #   3. Do CRrej for HIGHLY POSITIVE values (remaining dark & CR).
-                        #   4. Do CRrej for HIGHLY NEGATIVE values (oversubtracted dark?)
-                        #   Both CR rejections use sigfrac=0.5 (LACosmic's default) and objlim determined
-                        #   empirically.
-                        #   For positive rejection, it is better to be done before the fringe subtraction in
-                        #   principle. However, when I tested, CRrej before fringe subtraction gave almost no
-                        #   rejection of hot pixels, so I just did Fringe subtraction before positive CRrej.
-                        #       ysBach 2020-08-06 16:17:03 (KST: GMT+09:00)
-                        if pixel_mask_method == "crrej":
-                            if verbose:
-                                print(f"{pixel_mask_method} will be used.")
-                            # positive CR rejection
-                            if do_crrej_pos:
-                                redccd = cr_reject_nic(redccd,
-                                                       crrej_kw=dict(objlim=1, sigfrac=0.5),
-                                                       verbose=verbose_crrej)
-                                objname += "C"
-                                redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
-
-                            # # FRINGE subtraction
-                            # if mfringe is not None:
-                            #     redccd = bdf_process(redccd,
-                            #                         mfringe=mfringe,
-                            #                         mfringepath=mfringepath,
-                            #                         fringe_scale_fun=np.mean,
-                            #                         fringe_scale_section=self.sky_scale_section,
-                            #                         verbose_bdf=verbose_bdf)
-                            #     objname += "Fr"
-                            #     redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose
-
-                            # negative CR rejection
-                            if do_crrej_neg:
-                                add_to_header(redccd.header, 'h', verbose=verbose_bdf,
-                                              s="Negated the pixel values to remove 'negative' CR.")
-                                redccd.data *= -1
-                                redccd = cr_reject_nic(redccd,
-                                                       crrej_kw=dict(objlim=5, sigfrac=0.5),
-                                                       verbose=verbose_crrej)
-                                redccd.data *= -1
-                                add_to_header(redccd.header, 'h', verbose=verbose_bdf,
-                                              s="Negated the pixel values to restore the original sign.")
-
-                                objname += "Cneg"
-                                redccd, _ = self._save(redccd, fpath, objname, self.tmpred, verbose=verbose)
-
-                        # -- if medfilt case:
                         #   3. Calculate median-filtered frame.
                         #   4. Calculate
                         #       RATIO = original/medfilt,
                         #       SIGRATIO = (original - medfilt) / mean(original)
-                        #   5. Replace pixels where (RATIO > medfilt_ratio) & (SIGRATIO > medfilt_sig_ratio)
-                        elif pixel_mask_method == "medfilt_bpm":
-                            if verbose:
-                                print(f"{pixel_mask_method} will be used.")
+                        #   5. Replace pixels by Median BPM (MBPM) algorithm
+                        if verbose:
+                            print("Median filter bad pixel masking (MBPM) will be used.")
 
-                            res = medfilt_bpm(redccd,
-                                              std_section=self.sky_scale_section,
-                                              med_ratio_clip=med_ratio_clip,
-                                              std_ratio_clip=std_ratio_clip,
-                                              **medfilt_kw,
-                                              verbose=verbose_bpm,
-                                              full=True)
-                            redccd, posmask, negmask, med_filt, med_ratio, std_ratio = res
+                        redccd, res = medfilt_bpm(redccd,
+                                                  std_section=self.sky_scale_section,
+                                                  med_rat_clip=med_rat_clip,
+                                                  std_rat_clip=std_rat_clip,
+                                                  **medfilt_kw,
+                                                  verbose=verbose_bpm,
+                                                  full=True)
 
-                            tmpccd = redccd.copy()
-                            tmpccd.data = med_filt
-                            medfilt_objname = objname + "_MedFilt"
-                            _ = self._save(tmpccd, fpath, medfilt_objname, self.tmpred, verbose=verbose_bpm)
+                        tmpccd = redccd.copy()
+                        tmpccd.data = res['med_filt']
+                        medfilt_objname = objname + "_MedFilt"
+                        _ = self._save(tmpccd, fpath, medfilt_objname, self.tmpred, verbose=verbose_bpm)
 
-                            tmpccd.data = med_ratio
-                            medratio_objname = objname + "_MedRatio"
-                            _ = self._save(tmpccd, fpath, medratio_objname, self.tmpred, verbose=verbose_bpm)
+                        tmpccd.data = res['med_sub']
+                        med_sub_objname = objname + "_MedSub"
+                        _ = self._save(tmpccd, fpath, med_sub_objname, self.tmpred, verbose=verbose_bpm)
 
-                            tmpccd.data = std_ratio
-                            stdratio_objname = objname + "_StdRatio"
-                            _ = self._save(tmpccd, fpath, stdratio_objname, self.tmpred, verbose=verbose_bpm)
+                        tmpccd.data = res['med_rat']
+                        med_rat_objname = objname + "_MedRatio"
+                        _ = self._save(tmpccd, fpath, med_rat_objname, self.tmpred, verbose=verbose_bpm)
 
-                            tmpccd.data = (1*posmask + 2*negmask).astype(np.uint8)
-                            fullmask_objname = objname + "_MASK_pos1neg2"
-                            _ = self._save(tmpccd, fpath, fullmask_objname, self.tmpred, verbose=verbose_bpm)
+                        tmpccd.data = res['std_rat']
+                        std_rat_objname = objname + "_StdRatio"
+                        _ = self._save(tmpccd, fpath, std_rat_objname, self.tmpred, verbose=verbose_bpm)
 
-                        elif verbose:
-                            print(f"{pixel_mask_method} NOT understood !!")
+                        tmpccd.data = (1*res['posmask'] + 2*res['negmask']).astype(np.uint8)
+                        fullmask_objname = objname + "_MASK_pos1neg2"
+                        _ = self._save(tmpccd, fpath, fullmask_objname, self.tmpred, verbose=verbose_bpm)
+
+                        add_to_header(redccd.header, 'h', verbose=verbose_bdf,
+                                      s="{:-^72s}".format(' DONE '), fmt=None)
+
+                        # -- Uncertainty calculation
+                        # Use the raw one, i.e., BEFORE dark, flat, sky, crrej, etc.
+                        # var = error^2
+                        _t = Time.now()
+                        var = (rawccd.data/gain     # Photon noise = signal + dark + sky (fringe) BEFORE flat
+                               + (rdnoise/gain)**2  # readout noise
+                               + 1/12               # digitization (see Eq 12 and below of Merline+Howell 95)
+                               ).astype('float32')
+                        # sometimes negative pixel exists and gives NaN is sqrt is taken...
+                        # redccd.uncertainty = StdDevUncertainty(np.sqrt(var))
+                        redccd.uncertainty = VarianceUncertainty(var)
+
+                        add_to_header(redccd.header, 'h', verbose=verbose_bdf, t_ref=_t,
+                                      s=("1-sigma VARIANCE calculated "
+                                         + f"by GAIN ({gain}) and RDNOISE ({rdnoise});"
+                                         + " see ext=1 (EXTNAME = 'UNCERT')"))
 
                         # -- Save final result
-                        # Duplicated save as "Cneg" file above. The user may just DELETE tmpred folder in the
-                        # future if it is unnecessary.
-                        _ = self._save(redccd, fpath, objname_orig, self.reddir, verbose=verbose)
+                        redccd = bezel_ccd(redccd, bezel_x=bezel_x, bezel_y=bezel_y, replace=None,
+                                           verbose=verbose)
+                        _ = self._save(redccd, fpath, objname_proc, self.reddir, verbose=verbose)
 
                         if verbose:
                             print()
 
                     if verbose:
                         print()
+
+
+class NICPolPhot(NICPolDirMixin):
+    def __init__(self, location, objnames=None, reddir="reduced",
+                 p_eff=dict(J=98., H=95., K=92.), dp_eff=dict(J=6., H=7., K=12.),
+                 theta_inst=dict(J=0.5, H=1.3, K=-0.7), dtheta_inst=dict(J=1.3, H=3.1, K=6.3),
+                 q_inst=dict(J=0.0, H=0.03, K=-0.02), u_inst=dict(J=-0.01, H=-0.03, K=-0.07),
+                 dq_inst=dict(J=0.29, H=0.52, K=0.30), du_inst=dict(J=0.29, H=0.55, K=0.31),
+                 correct_dqdu_stddev_to_stderr=True
+                 ):
+        self.location = Path(location)
+        if reddir is None:
+            self.reddir = self.location
+        else:
+            self.reddir = self.location/reddir
+
+        if not self.reddir.exists():
+            raise FileNotFoundError("Reduced data directory not found.")
+
+        self.p_eff = p_eff
+        self.dp_eff = dp_eff
+        self.theta_inst = theta_inst
+        self.dtheta_inst = dtheta_inst
+        # TODO: Currently instrumental polarizaiton correction is turned off.
+        # self.q_inst = q_inst
+        # self.u_inst = u_inst
+        # if correct_dqdu_stddev_to_stderr:
+        #     for filt in "JHK":
+        #         # Convert stddev to the standard error of the mean estimator (see TakahashiJ+2018)
+        #         dq_inst[filt] = dq_inst[filt]/np.sqrt(150 + 15 + 15)
+        #         du_inst[filt] = du_inst[filt]/np.sqrt(150 + 15 + 15)
+        # self.dq_inst = dq_inst
+        # self.du_inst = du_inst
+
+        # We need not make a summary, because filenames contain all such information.
+        self.redfpaths = list(self.reddir.glob("*.fits"))
+        self.redfpaths.sort()
+        self.objnames = objnames
+        self.parsed = pd.DataFrame.from_dict([parse_fpath(fpath) for fpath in self.redfpaths])
+        #                                     ^^ 0.7-0.8 us per iteration, and few ms for DataFrame'ing
+
+        if self.objnames is not None:
+            objmask = self.parsed['OBJECT'].str.split('_', expand=True)[0].isin(np.atleast_1d(self.objnames))
+            self.parsed = self.parsed[objmask]
+            self.objfits = np.array(self.redfpaths)[objmask]
+        else:
+            self.objfits = self.redfpaths
+
+        self.parsed.insert(loc=0, column='file', value=self.objfits)
+        self.parsed['counter'] = self.parsed['counter'].astype(int)
+        self.parsed['set'] = np.tile(1 + np.arange(len(self.parsed)/3)//8, 3).astype(int)
+        #                                               (nimg/filter) // files/set=8
+        self.parsed['PA'] = self.parsed['PA'].astype(float)
+        self.parsed['INSROT'] = self.parsed['INSROT'].astype(float)
+        self.parsed['IMGROT'] = self.parsed['IMGROT'].astype(float)
+        self.grouped = self.parsed.groupby(['filt', 'set'])
+
+    def photpol(self, radii, figdir=None, thresh_tests=[30, 20, 10, 6, 5, 4, 3, 2, 1, 0],
+                sky_r_in=60, sky_r_out=90, skysub=True,
+                satlevel=dict(J=7000, H=7000, K=7000), sat_npix=dict(J=5, H=5, K=5),
+                verbose_bkg=False, verbose_obj=False, verbose=True,
+                obj_find_kw=dict(bezel_x=(30, 30), bezel_y=(180, 120), box_size=(64, 64),
+                                 filter_size=(12, 12), deblend_cont=1, minarea=100),
+                output_pol=None):
+        self.phots = {}
+        self.positions = {}
+        self.pols = {}
+
+        if figdir is not None:
+            self.figdir = Path(figdir)
+            self.figdir.mkdir(parents=True, exist_ok=True)
+            savefig = True
+        else:
+            self.figdir = None
+            savefig = False
+
+        self.radii = np.atleast_1d(radii)
+
+        self.skyan_kw = dict(r_in=sky_r_in, r_out=sky_r_out)
+        self.Pol = {}
+
+        for (filt, set_id), df in self.grouped:
+            if len(df) < 8:  # if not a full 4 images/set is obtained
+                continue
+            for i, (_, row) in enumerate(df.iterrows()):
+                fpath = row['file']
+                if HAS_FITSIO:
+                    # Using FITSIO reduces time 0.3 s/set --> 0.1 s/set (1 set = 8 FITS files).
+                    arr = fitsio.FITS(fpath)[0].read()
+                    var = fitsio.FITS(fpath)[1].read()  # variance only from photon noise.
+                else:
+                    _ccd = load_ccd(fpath)
+                    arr = _ccd.data
+                    var = _ccd.uncertainty
+
+                find_res = self._find_obj(arr, var=var, thresh_tests=thresh_tests, **obj_find_kw)
+                bkg, obj, seg, s_bkg, s_obj, found = find_res
+                if found:
+                    pos_x, pos_y = [obj['x'][0]], [obj['y'][0]]
+                    saturated = False
+
+                    cut = Cutout2D(data=arr, position=(pos_x[0], pos_y[0]), size=51)
+                    n_saturated = np.count_nonzero(cut.data > satlevel[filt.upper()])
+                    saturated = n_saturated > sat_npix[filt.upper()]
+                    if saturated:
+                        if verbose:
+                            print(f"{n_saturated} pixels above satlevel {satlevel[filt.upper()]} (at {filt})"
+                                  + "; Do not do any photometry. ")
+                        objsum = np.nan*np.ones_like(radii)
+                        varsum = np.nan*np.ones_like(radii)
+
+                    else:
+                        if verbose_bkg:
+                            print(s_bkg)
+                        if verbose_obj:
+                            print(s_obj)
+                        if verbose:
+                            dx = pos_x[0] - arr.shape[1]/2
+                            dy = pos_y[0] - arr.shape[0]/2
+                            print(f"{fpath.name}: "  # 0-th object at
+                                  + f"(x, y) = ({pos_x[0]:6.3f}, {pos_y[0]:7.3f}), "  # [0-indexing]
+                                  + f"(dx, dy) = ({dx:+6.3f}, {dy:+6.3f})"  # from image center
+                                  )
+
+                        objsum, varsum, _ = sep.sum_circle(arr, var=var, x=pos_x, y=pos_y, r=self.radii)
+                        if skysub:
+                            ones = np.ones_like(arr)
+                            aparea, _, _ = sep.sum_circle(ones, x=pos_x, y=pos_y, r=self.radii)
+                            sky_an = CircularAnnulus((pos_x, pos_y), **self.skyan_kw)
+                            sky = sky_fit(arr, annulus=sky_an)
+                            objsum -= sky['msky']*aparea
+                            varsum += (sky['ssky']*aparea)**2/sky['nsky'] + aparea*sky['ssky']**2
+
+                else:
+                    objsum = np.nan*np.ones_like(radii)
+                    varsum = np.nan*np.ones_like(radii)
+                    # pos_x, pos_y = [arr.shape[1]/2], [arr.shape[0]/2]
+                    # s_obj += "\n Using IMAGE CENTER as a fixed object center"
+                    # if verbose:
+                    #     print("Object not found. Using IMAGE CENTER as a fixed object center.")
+
+                self.phots[filt, set_id, row['POL-AGL1'], row['oe']] = dict(objsum=objsum, varsum=varsum)
+                self.positions[filt, set_id, row['POL-AGL1'], row['oe']] = (pos_x[0], pos_y[0])
+
+            # self.ratio_valu = {}
+            # self.ratio_vari = {}
+            # for ang in ['00.0', '45.0', '22.5', '67.5']:
+            #     phot_o = self.phots[filt, set_id, ang, 'o']
+            #     phot_e = self.phots[filt, set_id, ang, 'e']
+            #     self.ratio_valu[ang] = phot_e['objsum']/phot_o['objsum']
+            #     # sum of (err/apsum)^2 = variance/apsum^2
+            #     self.ratio_vari[ang] = (phot_e['varsum']/phot_e['objsum']**2
+            #                             + phot_o['varsum']/phot_o['objsum']**2)
+
+            # self.rq_valu = np.sqrt(self.ratio_valu['00.0']/self.ratio_valu['45.0'])
+            # self.ru_valu = np.sqrt(self.ratio_valu['22.5']/self.ratio_valu['67.5'])
+            # self.q_valu = (self.rq_valu - 1)/(self.rq_valu + 1)
+            # self.u_valu = (self.ru_valu - 1)/(self.ru_valu + 1)
+            # self.q_vari = (self.rq_valu/(self.rq_valu + 1)**2)**2*(self.ratio_vari['00.0']
+            #                                                        + self.ratio_vari['45.0'])
+            # self.u_vari = (self.ru_valu/(self.ru_valu + 1)**2)**2*(self.ratio_vari['22.5']
+            #                                                        + self.ratio_vari['67.5'])
+
+            # pol_valu = np.sqrt(self.q_valu**2 + self.u_valu**2)
+            # pol_err = np.sqrt(self.q_valu**2*self.q_vari + self.u_valu**2*self.u_vari)/pol_valu
+            # th_valu = 0.5*np.rad2deg(np.arctan2(self.u_valu, self.q_valu))
+            # th_err = 0.5*np.rad2deg(pol_err/pol_valu)
+            self.Pol[filt, set_id] = LinPolOE4(
+                i000_o=self.phots[filt, set_id, '00.0', 'o']['objsum'],
+                i000_e=self.phots[filt, set_id, '00.0', 'e']['objsum'],
+                i450_o=self.phots[filt, set_id, '45.0', 'o']['objsum'],
+                i450_e=self.phots[filt, set_id, '45.0', 'e']['objsum'],
+                i225_o=self.phots[filt, set_id, '22.5', 'o']['objsum'],
+                i225_e=self.phots[filt, set_id, '22.5', 'e']['objsum'],
+                i675_o=self.phots[filt, set_id, '67.5', 'o']['objsum'],
+                i675_e=self.phots[filt, set_id, '67.5', 'e']['objsum'],
+                di000_o=np.sqrt(self.phots[filt, set_id, '00.0', 'o']['varsum']),
+                di000_e=np.sqrt(self.phots[filt, set_id, '00.0', 'e']['varsum']),
+                di450_o=np.sqrt(self.phots[filt, set_id, '45.0', 'o']['varsum']),
+                di450_e=np.sqrt(self.phots[filt, set_id, '45.0', 'e']['varsum']),
+                di225_o=np.sqrt(self.phots[filt, set_id, '22.5', 'o']['varsum']),
+                di225_e=np.sqrt(self.phots[filt, set_id, '22.5', 'e']['varsum']),
+                di675_o=np.sqrt(self.phots[filt, set_id, '67.5', 'o']['varsum']),
+                di675_e=np.sqrt(self.phots[filt, set_id, '67.5', 'e']['varsum'])
+            )
+
+            self.Pol[filt, set_id].calc_pol(
+                p_eff=self.p_eff[filt.upper()], dp_eff=self.dp_eff[filt.upper()],
+                theta_inst=self.theta_inst[filt.upper()], dtheta_inst=self.dtheta_inst[filt.upper()],
+                pa_inst=np.mean(df['PA']),
+                rot_instq=np.mean(df['INSROT'][:4]), rot_instu=np.mean(df['INSROT'][-4:]),
+                q_inst=0, u_inst=0, dq_inst=0, du_inst=0,
+                degree=True, percent=True
+            )
+
+            self.pols[filt, set_id] = dict(pol=self.Pol[filt, set_id].pol,
+                                           dpol=self.Pol[filt, set_id].dpol,
+                                           theta=self.Pol[filt, set_id].theta,
+                                           dtheta=self.Pol[filt, set_id].dtheta)
+
+        self.phots = (pd.DataFrame.from_dict(self.phots)).T  # ~ few ms for tens of sets
+        self.pols = (pd.DataFrame.from_dict(self.pols)).T    # ~ few ms for tens of sets
+
+        if savefig:
+            from mpl_toolkits.axes_grid1 import ImageGrid
+            from matplotlib import pyplot as plt
+            from matplotlib import rcParams
+
+            # We need to do it in a separate cell. See:
+            # https://github.com/jupyter/notebook/issues/3385
+            plt.style.use('default')
+            rcParams.update({'font.size': 12})
+
+            zs_v = {}
+            mm_v = {}
+            for filt in 'jhk':
+                avgarr = 0
+                fpaths = self.parsed[self.parsed['filt'] == filt]['file']
+                for fpath in fpaths:
+                    avgarr += fitsio.FITS(fpath)[0].read()
+                avgarr /= len(fpaths)
+                zs = ImageNormalize(avgarr, interval=ZScaleInterval())
+                mm_v[filt] = dict(vmin=avgarr.min(), vmax=avgarr.max())
+                zs_v[filt] = dict(vmin=zs.vmin, vmax=zs.vmax)
+
+            imgrid_kw = dict(
+                nrows_ncols=(1, 8),
+                axes_pad=(0.15, 0.05),
+                label_mode="1",  # "L"
+                share_all=True,
+                cbar_location="bottom",
+                cbar_mode="single",  # "each",
+                cbar_size="0.5%",
+                cbar_pad="1.2%"
+            )
+
+            fig = plt.figure(figsize=(9, 7))
+            grid_z, grid_s = None, None
+            for (filt, set_id), df in self.grouped:
+                if len(df) < 8:  # if not a full 4 images/set is obtained
+                    continue
+                del grid_z, grid_s
+                # sub-gridding one of the Axes (see nrows_ncols)
+                grid_z = ImageGrid(fig, '211', **imgrid_kw)
+                grid_s = ImageGrid(fig, '212', **imgrid_kw)
+
+                for i, (_, row) in enumerate(df.iterrows()):
+                    fpath = row['file']
+                    # Using FITSIO reduces time 0.3 s/set --> 0.1 s/set (1set = 8 FITS files).
+                    arr = fitsio.FITS(fpath)[0].read()
+                    pos = self.positions[filt, set_id, row['POL-AGL1'], row['oe']]
+
+                    ap1 = CircularAperture(pos, r=self.radii.min())
+                    ap_mid = CircularAperture(pos, r=(self.radii.min() + self.radii.max())/2)
+                    ap2 = CircularAperture(pos, r=self.radii.max())
+                    an = CircularAnnulus(pos, **self.skyan_kw)
+
+                    ax_z = grid_z[i]
+                    ax_s = grid_s[i]
+                    ax_z.set_title("{}˚, {}".format(row['POL-AGL1'], row['oe']),
+                                   fontsize='small')
+
+                    im_z = ax_z.imshow(arr, origin='lower', **zs_v[filt])
+                    im_s = ax_s.imshow(arr, origin='lower', **mm_v[filt],
+                                       norm=ImageNormalize(stretch=SqrtStretch()))
+                    for ax in [ax_z, ax_s]:
+                        ap1.plot(ax, color='r', ls='--')
+                        ap2.plot(ax, color='r', ls='--')
+                        ap_mid.plot(ax, color='r')
+                        an.plot(ax, color='w')
+
+                grid_z.cbar_axes[0].colorbar(im_z)
+                grid_s.cbar_axes[0].colorbar(im_s)
+                plt.suptitle(f"{filt.upper()}, {row['OBJECT']}, Set #{set_id:03d}", fontfamily='monospace')
+                # plt.tight_layout()
+                plt.savefig(self.figdir/f"{filt}_{row['yyyymmdd']}_{row['OBJECT']}_{set_id:03d}.pdf",
+                            bbox_inches='tight', dpi=300)
+                fig.clf()
+
+        if output_pol is not None:
+            pols2save = self.pols.copy()
+            for c in pols2save.columns:
+                for idx in pols2save.index:
+                    pols2save[c][idx] = pols2save[c][idx].tolist()
+
+            pols2save.to_csv(output_pol, index=True)
+
+        return self.pols
+
+
+def read_pols(polpath):
+    from numpy import nan
+    # If not imported like this, ``eval('[1.1, nan, 2.3]')`` will raise an error.
+
+    pols = pd.read_csv(polpath, header=0, index_col=[0, 1])
+    for col in pols.columns:
+        for idx in pols.index:
+            pols[col][idx] = np.array(eval(pols[col][idx]))
+    return pols
 
 
 # # -------------------------------------------------------------------------------------------------------- #
@@ -1218,57 +1637,6 @@ class NICPolImage:
                  box_size=(64, 64), filter_size=(12, 12), deblend_cont=1,
                  minarea=100, verbose=True,
                  **extract_kw):
-        """
-        Note
-        ----
-        This includes ``sep``'s ``extract`` and ``background``.
-        Equivalent processes in photutils may include ``detect_sources``
-        and ``source_properties``, and ``Background2D``, respectively.
-
-        Parameters
-        ----------
-        thresh : float, optional.
-            The SNR threshold. It is not an absolute pixel value because
-            internally the ``self.err_o`` and ``self.err_e`` will be
-            used.
-
-        bezel_x, bezel_y : int, float, list of such, optional.
-            The x and y bezels, in ``[lower, upper]`` convention.
-
-        box_size : int or array-like (int) optional.
-            The background smooting box size. Default is ``(64, 64)``
-            for NIC. **Note**: If array-like, order must be ``[height,
-            width]``, i.e., y and x size.
-
-        filter_size : int or array-like (int) optional.
-            The 2D median filter size. Default is ``(12, 12)`` for NIC.
-            **Note**: If array-like, order must be ``[height, width]``,
-            i.e., y and x size.
-
-        minarea : int, optional
-            Minimum number of pixels required for an object. Default is
-            100 for NIC.
-
-        deblend_cont : float, optional
-            Minimum contrast ratio used for object deblending. To
-            entirely disable deblending, set to 1.0.
-
-        # gauss_fbox : int, float, array-like of such, optional.
-        #     The fitting box size to fit a Gaussian2D function to the
-        #     objects found by ``sep``. This is done to automatically set
-        #     aperture sizes of the object.
-
-        Returns
-        -------
-
-        Example
-        -------
-        >>>
-
-        Note
-        ----
-
-        """
         bkg_kw = dict(maskthresh=0.0, filter_threshold=0.0,
                       box_size=box_size, filter_size=filter_size)
         ext_kw = dict(thresh=thresh, minarea=minarea,

@@ -12,16 +12,18 @@ from ysfitsutilpy import (CCDData_astype, add_to_header, crrej,
                           trim_ccd, medfilt_bpm)
 
 from .util import (FOURIERSECTS, GAIN, NICSECTS, RDNOISE, VERTICALSECTS, NIC_CRREJ_KEYS, OBJSECTS,
-                   fft_peak_freq, fit_sinusoids, infer_filter, multisin, split_oe)
+                   fft_peak_freq, fit_sinusoids, infer_filter, multisin, split_oe, _set_fstem)
 
 __all__ = ["reorganize_fits",
            "cr_reject_nic", "vertical_correct", "lrsubtract", "fit_fourier",
            "find_fourier_peaks"]
 
 
-def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=None,
-                    method='median', sigclip_kw=dict(sigma=2, maxiters=5),
-                    update_header=True, verbose_bpm=False, split=True, verbose=False):
+def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=None, method='median',
+                    sigclip_kw=dict(sigma=2, maxiters=5), med_sub_clip=[-5, 5],
+                    dark_medfilt_bpm_kw=dict(med_rat_clip=None, std_rat_clip=None, std_model='std',
+                                             logical='and', sigclip_kw=dict(sigma=2, maxiters=5, std_ddof=1)),
+                    update_header=True, save_nonpol=False, verbose_bpm=False, split=True, verbose=False):
     ''' Rename the original NHAO NIC image and convert to certain dtype.
     Parameters
     ----------
@@ -44,34 +46,32 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
 
     Here, not only reducing the size, the file names are updated using
     the original file name and header information:
-        ``<FILTER (j, h, k)><UT YYMMDD>_<COUNTER:04d>.fits``
+        ``<FILTER (j, h, k)><System YYMMDD>_<COUNTER:04d>.fits``
     It is then updated to
-        ``<FILTER (j, h, k)>_<UT YYYYMMDD>_<COUNTER:04d>
-          _<OBJECT>_<EXPTIME:.1f>_<POL-AGL1:04.1f>_<INSROT:+04.0f>.fits``
-
+        ``<FILTER (j, h, k)>_<System YYYYMMDD>_<COUNTER:04d>
+          _<OBJECT>_<EXPTIME:.1f>_<POL-AGL1:04.1f>_<INSROT:+04.0f>
+          _<IMGROT:+04.0f>_<PA:+06.1f>.fits``
     '''
     def _sub_lr(part_l, part_r, filt):
         # part_l = cr_reject_nic(part_l, crrej_kw=crrej_kw, verbose=verbose_crrej, add_process=False)
         add_to_header(part_l.header, 'h', verbose=verbose_bpm,
                       s=("Median filter badpixel masking (MBPM) algorithm started running on the left half "
                          + 'to remove hot pixels on left; a prerequisite for the right frame - left frame" '
-                         + "technique to remove wavy pattern."))
-        part_l = medfilt_bpm(part_l,  med_ratio_clip=[0., 2], std_ratio_clip=[-4, 4],
-                             std_section=OBJSECTS(right_half=True)[filt][0])
-        # std section above means the rectangular FOV of o-ray, shifted
-        # by 512 pixel to -x direction
+                         + f"technique to remove wavy pattern. Using med_sub_clip = {med_sub_clip} "
+                         + f"and {dark_medfilt_bpm_kw}"))
 
-        # To keep the header log of medfilt_bpm, override the header,
-        # althought the Trim-related history will be destroyed.
-        part_r.header = part_l.header
+        # To keep the header log of medfilt_bpm, I need this:
+        _tmp = part_r.data
+        part_r.data = part_l.data
+        part_r = medfilt_bpm(part_r,  med_sub_clip=med_sub_clip, **dark_medfilt_bpm_kw)
 
         _t = Time.now()
-        part_r.data -= part_l.data
-        part_r.data = part_r.data.astype(dtype)
+        part_r.data = (_tmp - part_r.data).astype(dtype)
+
         add_to_header(part_r.header, 'h', t_ref=_t, verbose=verbose_bpm,
                       s=("Left part (vertical subtracted and MBPMed) is subtracted from the right part "
                          + "(only vertical subtracted)"))
-        add_to_header(part_r.header, 'h', verbose=verbose_bpm, s="{:=^72s}".format(' Done '), fmt=None)
+        add_to_header(part_r.header, 'h', verbose=verbose_bpm, s="{:-^72s}".format(' DONE '), fmt=None)
         return part_r
 
     def _save(ccd, fstem):
@@ -120,41 +120,7 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
 
     # == Set output stem =================================================================================== #
     hdr = ccd_nbit.header
-    # This yyyymmdd is neither JST (Japan) nor UT... Maybe TELINFO? But
-    # let me just guess it from the fname..
-    yyyymmdd = '20' + fpath.stem.split('_')[0][1:]
-
-    # yyyymmdd = hdr["DATE_LT"].replace("-", "")
-    # try:
-    #     # Start of exposure, if exists
-    #     yyyymmdd = Time(hdr['DATE-OBS'], format='isot').strftime('%Y%m%d')
-    # except KeyError:
-    #     # if only the FITS creation date (after the exposure) is present
-    #     # Example: 2018 Flat data
-    #     yyyymmdd = Time(hdr['TELINFO'], format='iso').strftime('%Y%m%d')
-    outstem = (
-        f"{hdr['FILTER'].lower()}"  # h, j, k
-        + f"_{yyyymmdd}"      # YYYY-MM-DD
-        + f"_{int(counter):04d}"
-        + f"_{hdr['OBJECT']}"
-        + f"_{hdr['EXPTIME']:.1f}"
-    )
-
-    # because of POL-AGL1, I cannot use yfu's renaming scheme...
-    # ysBach 2020-05-15 16:22:37 (KST: GMT+09:00)
-    try:
-        outstem += f"_{hdr['POL-AGL1']:04.1f}"
-        polmode = True
-    except (ValueError, KeyError):  # non-pol has no POL-AGL1 or = 'x'
-        outstem += "_xxxx"
-        polmode = False
-
-    try:
-        outstem += f"_{hdr['INSROT']:+04.0f}"
-        polmode = True
-    except (ValueError, KeyError):  # non-pol has no POL-AGL1 or = 'x'
-        outstem += "_xxxx"
-        polmode = False
+    outstem, polmode = _set_fstem(hdr)
 
     # == Update warning-invoking parts ===================================================================== #
     try:
@@ -197,7 +163,8 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
             _save(ccd_nbit, outstem)
 
     else:
-        _save(ccd_nbit, outstem)
+        if save_nonpol:
+            _save(ccd_nbit, outstem)
 
     return ccd_nbit
 

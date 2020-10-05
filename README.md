@@ -12,6 +12,7 @@ You will need Python **3.6+** (recommended: [Anaconda 3](https://www.anaconda.co
 # On terminal
 conda install -c astropy astroquery photutils ccdproc astroscrappy
 conda install -c openastronomy sep
+conda install -c conda-forge fitsio
 cd ~            # whatever directory you want
 mkdir github    # whatever name you want
 git clone https://github.com/ysBach/ysfitsutilpy.git
