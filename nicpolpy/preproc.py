@@ -1,106 +1,83 @@
-from multiprocessing import Pool
+import time
 from pathlib import Path
 
 import astropy
 import numpy as np
+import pandas as pd
 from astropy.nddata import CCDData
-from astropy.stats import sigma_clip, sigma_clipped_stats
+from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
+from ysfitsutilpy import (CCDData_astype, _parse_data_header, add_to_header,
+                          crrej, fitsxy2py, group_combine, load_ccd,
+                          medfilt_bpm, trim_ccd, update_process)
+from ysfitsutilpy.preproc import bdf_process
 
-from ysfitsutilpy import (CCDData_astype, add_to_header, crrej,
-                          datahdr_parse, fitsxy2py, load_ccd,
-                          trim_ccd, medfilt_bpm)
+from .util import (GAIN, NIC_CRREJ_KEYS, RDNOISE, USEFUL_KEYS, VERTICALSECTS,
+                   _find_calframe, _load_as_dict, _sanitize_objects,
+                   _save_or_load_summary, _set_dir_iol, _set_fstem,
+                   infer_filter, iterator, split_oe)
 
-from .util import (FOURIERSECTS, GAIN, NICSECTS, RDNOISE, VERTICALSECTS, NIC_CRREJ_KEYS, OBJSECTS,
-                   fft_peak_freq, fit_sinusoids, infer_filter, multisin, split_oe, _set_fstem)
+__all__ = ["prepare",
+           "cr_reject_nic", "vertical_correct", "lrsubtract",
+           "fourier_lrsub", "proc_16_vertical", "proc_fourier",
+           "make_dark", "make_fringe", "preproc_nic"
+           ]
 
-__all__ = ["reorganize_fits",
-           "cr_reject_nic", "vertical_correct", "lrsubtract", "fit_fourier",
-           "find_fourier_peaks"]
+
+def _save(ccd, savedir, fstem, return_path=False):
+    if savedir is None:
+        return
+
+    outpath = Path(savedir)/f"{fstem}.fits"
+    try:
+        ccd.write(outpath, overwrite=True, output_verify='fix')
+    except FileNotFoundError:
+        outpath.parent.mkdir(parents=True)
+        ccd.write(outpath, overwrite=True, output_verify='fix')
+    if return_path:
+        return outpath
 
 
-def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=None, method='median',
-                    sigclip_kw=dict(sigma=2, maxiters=5), med_sub_clip=[-5, 5],
-                    dark_medfilt_bpm_kw=dict(med_rat_clip=None, std_rat_clip=None, std_model='std',
-                                             logical='and', sigclip_kw=dict(sigma=2, maxiters=5, std_ddof=1)),
-                    update_header=True, save_nonpol=False, verbose_bpm=False, split=True, verbose=False):
-    ''' Rename the original NHAO NIC image and convert to certain dtype.
-    Parameters
-    ----------
-    fpath : path-like
-        Path to the original image FITS file.
+def _do_16bit_vertical(fpath, dir_out, skip_if_exists=True, sigclip_kw=dict(sigma=2, maxiters=5),
+                       fitting_sections=None, method='median', verbose=True, show_progress=True):
+    ''' Changes to 16-bit and correct the vertical pattern.
+    dir_out : path-like
+        The directory for the resulting FITS files to be saved, RELATIVE to ``self.dir_work``.
 
-    outdir : None, path-like
-        The top directory for the new file to be saved. If `None`,
-        nothing will be saved.
-
-    Note
-    ----
-    Original NHAO NIC image is in 32-bit integer, and is twice the size
-    it should be. To save the storage, it is desirable to convert those
-    to 16-bit. As the bias is not added to the FITS frame from NHAO NIC,
-    the pixel value in the raw FITS file can be negative. Fortunately,
-    however, the maximum pixel value when saturation occurs is only
-    about 20k, and therefore using ``int16`` rather than ``uint16`` is
-    enough.
-
-    Here, not only reducing the size, the file names are updated using
-    the original file name and header information:
-        ``<FILTER (j, h, k)><System YYMMDD>_<COUNTER:04d>.fits``
-    It is then updated to
-        ``<FILTER (j, h, k)>_<System YYYYMMDD>_<COUNTER:04d>
-          _<OBJECT>_<EXPTIME:.1f>_<POL-AGL1:04.1f>_<INSROT:+04.0f>
-          _<IMGROT:+04.0f>_<PA:+06.1f>.fits``
+    verbose : int
+        Larger number means it becomes more verbose::
+            * 0: print nothing
+            * 1: Only very essential things
+            * 2: + verbose for summary CSV file
+            * 3: + the HISTORY in each FITS file's header
     '''
-    def _sub_lr(part_l, part_r, filt):
-        # part_l = cr_reject_nic(part_l, crrej_kw=crrej_kw, verbose=verbose_crrej, add_process=False)
-        add_to_header(part_l.header, 'h', verbose=verbose_bpm,
-                      s=("Median filter badpixel masking (MBPM) algorithm started running on the left half "
-                         + 'to remove hot pixels on left; a prerequisite for the right frame - left frame" '
-                         + f"technique to remove wavy pattern. Using med_sub_clip = {med_sub_clip} "
-                         + f"and {dark_medfilt_bpm_kw}"))
-
-        # To keep the header log of medfilt_bpm, I need this:
-        _tmp = part_r.data
-        part_r.data = part_l.data
-        part_r = medfilt_bpm(part_r,  med_sub_clip=med_sub_clip, **dark_medfilt_bpm_kw)
-
-        _t = Time.now()
-        part_r.data = (_tmp - part_r.data).astype(dtype)
-
-        add_to_header(part_r.header, 'h', t_ref=_t, verbose=verbose_bpm,
-                      s=("Left part (vertical subtracted and MBPMed) is subtracted from the right part "
-                         + "(only vertical subtracted)"))
-        add_to_header(part_r.header, 'h', verbose=verbose_bpm, s="{:-^72s}".format(' DONE '), fmt=None)
-        return part_r
-
-    def _save(ccd, fstem):
-        if outdir is None:
-            return
-
-        outpath = Path(outdir)/f"{fstem}.fits"
-        try:
-            ccd.write(outpath, overwrite=True, output_verify='fix')
-        except FileNotFoundError:
-            outpath.parent.mkdir(parents=True)
-            ccd.write(outpath, overwrite=True, output_verify='fix')
-
     fpath = Path(fpath)
     ccd_orig = load_ccd(fpath)
     _t = Time.now()
-    ccd_nbit = ccd_orig.copy()
-    ccd_nbit = CCDData_astype(ccd_nbit, dtype=dtype)
 
-    add_to_header(ccd_nbit.header, 'h', verbose=verbose, fmt=None,
+    # == Set output stem =================================================================================== #
+    outstem, _ = _set_fstem(ccd_orig.header)
+    outstem += "-PROC-v"
+
+    # == Skip if conditions meet =========================================================================== #
+    if skip_if_exists and (dir_out/f"{outstem}.fits").exists():
+        return
+
+    # == First, change the bit ============================================================================= #
+    ccd_nbit = ccd_orig.copy()
+    ccd_nbit = CCDData_astype(ccd_nbit, dtype='int16')
+
+    add_to_header(ccd_nbit.header, 'h', verbose=verbose,
                   s="{:=^72s}".format(' Basic preprocessing start '))
 
     if ccd_orig.dtype != ccd_nbit.dtype:
-        add_to_header(ccd_nbit.header, 'h', f"Changed dtype (BITPIX): {ccd_orig.dtype} to {ccd_nbit.dtype}",
-                      t_ref=_t, verbose=verbose)
+        add_to_header(ccd_nbit.header, 'h', t_ref=_t, verbose=verbose,
+                      s=f"Changed dtype (BITPIX): {ccd_orig.dtype} to {ccd_nbit.dtype}")
 
-    # == First, check if identical ========================================================================= #
-    # It takes < ~20 ms on MBP 2018 15" (i7 2.6 GHz, 16GB 2400MHz DDR 4
-    # on macOS 10.14.6) ysBach 2020-05-15 16:06:08 (KST: GMT+09:00)
+    # == Then check if identical =========================================================================== #
+    # It takes < ~20 ms on MBP 15" [2018, macOS 10.14.6, i7-8850H (2.6 GHz; 6-core), RAM 16 GB (2400MHz
+    # DDR4), Radeon Pro 560X (4GB)]
+    #   ysBach 2020-05-15 16:06:08 (KST: GMT+09:00)
     np.testing.assert_almost_equal(
         ccd_orig.data - ccd_nbit.data,
         np.zeros(ccd_nbit.data.shape)
@@ -118,79 +95,179 @@ def reorganize_fits(fpath, outdir=Path('.'), dtype='int16', fitting_sections=Non
             counter = 9999
         ccd_nbit.header['COUNTER'] = (counter, "Image counter of the day, 1-indexing; 9999=TEST")
 
-    # == Set output stem =================================================================================== #
-    hdr = ccd_nbit.header
-    outstem, polmode = _set_fstem(hdr)
-
     # == Update warning-invoking parts ===================================================================== #
     try:
-        ccd_nbit.header["MJD-STR"] = float(hdr["MJD-STR"])
-        ccd_nbit.header["MJD-END"] = float(hdr["MJD-END"])
+        ccd_nbit.header["MJD-STR"] = float(ccd_nbit.header["MJD-STR"])
+        ccd_nbit.header["MJD-END"] = float(ccd_nbit.header["MJD-END"])
     except KeyError:
         pass
 
-    # == Simple process to remove artifacts... ============================================================= #
-    ccd_nbit = vertical_correct(ccd_nbit,
-                                fitting_sections=fitting_sections,
-                                method=method,
-                                sigclip_kw=sigclip_kw,
-                                dtype='float32',
-                                return_pattern=False,
-                                update_header=update_header,
-                                verbose=verbose)
+    # == vertical pattern subtraction ====================================================================== #
+    ccd_nbit_v = vertical_correct(
+        ccd_nbit,
+        sigclip_kw=sigclip_kw,
+        fitting_sections=fitting_sections,
+        method=method,
+        dtype='int16',
+        return_pattern=False
+    )
+    update_process(ccd_nbit_v.header, "v", additional_comment=dict(v="vertical pattern"))
+
+    _save(ccd_nbit_v, dir_out, outstem)
+    return ccd_nbit_v
+
+
+def _do_fourier(fpath, dir_out, cut_wavelength=200, med_sub_clip=[-5, 5], med_rat_clip=[0.5, 2],
+                std_rat_clip=[-5, 5], skip_if_exists=True, verbose=True):
+    fpath = Path(fpath)
+    outstem = fpath.stem + "f"  # hard-coded
+    # == Skip if conditions meet =================================================================== #
+    if skip_if_exists and (dir_out/f"{outstem}.fits").exists():
+        return
+
+    ccd_v = load_ccd(fpath)
+    ccd_vf = fourier_lrsub(
+        ccd_v,
+        cut_wavelength=cut_wavelength,
+        med_sub_clip=med_sub_clip,
+        med_rat_clip=med_rat_clip,
+        std_rat_clip=std_rat_clip,
+        verbose_bpm=verbose,
+        verbose=verbose
+    )
+    ccd_vf = CCDData_astype(ccd_vf, 'float32')
+    update_process(ccd_vf.header, "f", add_comment=False, additional_comment={'f': "fourier pattern"})
+    _save(ccd_vf, dir_out, outstem)
+    return ccd_vf
+
+
+def prepare(fpath, outdir=Path('.'),
+            kw_vertical=dict(sigclip_kw=dict(sigma=2, maxiters=5), fitting_sections=None, method='median',
+                             update_header=True, verbose=False),
+            dir_vc=None, dir_vcfs=None,
+            kw_fourier={'med_sub_clip': [-5, 5], 'med_rat_clip': [0.5, 2], 'std_rat_clip': [-5, 5]},
+            save_nonpol=False, split=True, verbose=False):
+    ''' Rename the original NHAO NIC image and convert to certain dtype.
+
+    Note
+    ----
+    Original NHAO NIC image is in 32-bit integer, and is twice the size it should be. To save the
+    storage, it is desirable to convert those to 16-bit. As the bias is not added to the FITS frame
+    from NHAO NIC, the pixel value in the raw FITS file can be negative. Fortunately, however, the
+    maximum pixel value when saturation occurs is only about 20k, and therefore using ``int16`` rather
+    than ``uint16`` is enough.
+
+    Here, not only reducing the size, the file names are updated using the original file name and
+    header information:
+        ``<FILTER (j, h, k)><System YYMMDD>_<COUNTER:04d>.fits``
+    It is then updated to
+        ``<FILTER (j, h, k)>_<System YYYYMMDD>_<COUNTER:04d>_<OBJECT>_<EXPTIME:.1f>_<POL-AGL1:04.1f>
+          _<INSROT:+04.0f>_<IMGROT:+04.0f>_<PA:+06.1f>.fits``
+    '''
+    ccd_orig = load_ccd(fpath)
+    _t = Time.now()
+    ccd_nbit = ccd_orig.copy()
+    ccd_nbit = CCDData_astype(ccd_nbit, dtype='int16')
+
+    add_to_header(ccd_nbit.header, 'h', verbose=verbose,
+                  s="{:=^72s}".format(' Basic preprocessing start '))
+
+    if ccd_orig.dtype != ccd_nbit.dtype:
+        add_to_header(ccd_nbit.header, 'h', t_ref=_t, verbose=verbose,
+                      s=f"Changed dtype (BITPIX): {ccd_orig.dtype} to {ccd_nbit.dtype}")
+
+    # == First, check if identical ===================================================================== #
+    # It takes < ~20 ms on MBP 15" [2018, macOS 10.14.6, i7-8850H (2.6 GHz; 6-core), RAM 16 GB (2400MHz
+    # DDR4), Radeon Pro 560X (4GB)]
+    #   ysBach 2020-05-15 16:06:08 (KST: GMT+09:00)
+    np.testing.assert_almost_equal(
+        ccd_orig.data - ccd_nbit.data,
+        np.zeros(ccd_nbit.data.shape)
+    )
+
+    # == Set counter =================================================================================== #
+    try:
+        counter = ccd_nbit.header["COUNTER"]
+    except KeyError:
+        try:
+            counter = fpath.stem.split('_')[1]
+            counter = counter.split('.')[0]
+            # e.g., hYYMMDD_dddd.object.pcr.fits
+        except IndexError:  # e.g., test images (``h.fits```)
+            counter = 9999
+        ccd_nbit.header['COUNTER'] = (counter, "Image counter of the day, 1-indexing; 9999=TEST")
+
+    # == Update warning-invoking parts ================================================================= #
+    try:
+        ccd_nbit.header["MJD-STR"] = float(ccd_nbit.header["MJD-STR"])
+        ccd_nbit.header["MJD-END"] = float(ccd_nbit.header["MJD-END"])
+    except KeyError:
+        pass
+
+    # == Set output stem =============================================================================== #
+    outstem, polmode = _set_fstem(ccd_nbit.header)
+
+    # == vertical pattern subtraction ================================================================== #
+    ccd_nbit_vc = vertical_correct(ccd_nbit, **kw_vertical, dtype='int16', return_pattern=False)
+
+    if dir_vc is not None:
+        _save(ccd_nbit_vc, dir_vc, outstem + "_vc")
 
     if polmode:
-        filt = infer_filter(ccd_nbit, filt=None, verbose=verbose)
+        # == Do Fourier pattern subtraction ============================================================ #
+        ccd_nbit_vcfs = fourier_lrsub(ccd_nbit_vc, cut_wavelength=200, **kw_fourier)
+        ccd_nbit_vcfs = CCDData_astype(ccd_nbit_vcfs, dtype='int16')
+
+        if dir_vcfs is not None:
+            _save(ccd_nbit_vcfs, dir_vcfs, outstem + "_vc_fs")
 
         if split:
-            ccds_l = split_oe(ccd_nbit, filt=filt, right_half=True, verbose=verbose)
-            ccds_r = split_oe(ccd_nbit, filt=filt, right_half=False, verbose=verbose)
-            ccd_nbit = []
-            for i, oe in enumerate(['o', 'e']):
-                part_l = ccds_l[i]
-                part_r = ccds_r[i]
-                _ccd_nbit = _sub_lr(part_l, part_r, filt)
-                _save(_ccd_nbit, outstem + f"_{oe:s}")
-                ccd_nbit.append(_ccd_nbit)
+            ccds = split_oe(ccd_nbit_vcfs, verbose=verbose)
+            ccd_out = []
+            for _ccd, oe in zip(ccds, 'oe'):
+                _save(_ccd, outdir, outstem + f"_{oe:s}")
+                ccd_out.append(_ccd)
 
         else:
-            # left half and right half
-            part_l = trim_ccd(ccd_nbit, NICSECTS["left"], verbose=verbose)
-            part_r = trim_ccd(ccd_nbit, NICSECTS["right"], verbose=verbose)
-            ccd_nbit = _sub_lr(part_l, part_r, filt)
-
-            ccd_nbit = part_r.copy()
-            _save(ccd_nbit, outstem)
+            ccd_out = ccd_nbit_vcfs
+            _save(ccd_out, outdir, outstem)
 
     else:
+        ccd_out = ccd_nbit_vc
         if save_nonpol:
-            _save(ccd_nbit, outstem)
+            _save(ccd_out, outdir, outstem)
 
-    return ccd_nbit
+    return ccd_out
 
 
 def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, add_process=True, crrej_kw=None,
                   verbose=True, full=False):
     """
+
     Parameters
     ----------
+
     ccd: CCDData
         The ccd to be processed.
+
     filt: str, None, optional.
-        The filter name in one-character string (case insensitive). If
-        ``None``(default), it will be inferred from the header (key
-        ``"FILTER"``).
+        The filter name in one-character string (case insensitive). If `None`(default), it will be
+        inferred from the header (key ``"FILTER"``).
+
     update_header: bool, optional.
         Whether to update the header if there is any.
+
     add_process : bool, optional.
         Whether to add ``PROCESS`` key to the header.
+
     crrej_kw: dict, optional.
-        The keyword arguments for the ``astroscrappy.detect_cosmics``.
-        If ``None`` (default), the parameters for IRAF-version of L.A.
-        Cosmic, except for the ``sepmed = True`` and ``gain`` and
+        The keyword arguments for the ``astroscrappy.detect_cosmics``. If `None` (default), the
+        parameters for IRAF-version of L.A. Cosmic, except for the ``sepmed = True`` and ``gain`` and
         ``readnoise`` are replaced to the values of NIC detectors.
+
     verbose: bool, optional
         The verbose paramter to ``astroscrappy.detect_cosmics``.
+
     Returns
     -------
     nccd: CCDData
@@ -198,10 +275,9 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, add_process=Tru
 
     Note
     ----
-    astroscrappy automatically correct gain (i.e., output frame in the
-    unit of electrons, not ADU). In this function, this is undone, i.e.,
-    I divide it with the gain to restore ADU unit. Also ``nccd.mask``
-    will contain the mask from cosmic-ray detection.
+    astroscrappy automatically correct gain (i.e., output frame in the unit of electrons, not ADU). In
+    this function, this is undone, i.e., I divide it with the gain to restore ADU unit. Also
+    ``nccd.mask`` will contain the mask from cosmic-ray detection.
     """
     crkw = NIC_CRREJ_KEYS.copy()
 
@@ -237,37 +313,44 @@ def cr_reject_nic(ccd, mask=None, filt=None, update_header=True, add_process=Tru
 def vertical_correct(ccd, fitting_sections=None, method='median', sigclip_kw=dict(sigma=2, maxiters=5),
                      dtype='float32', return_pattern=False, update_header=True, verbose=False):
     ''' Correct vertical strip patterns.
+
     Paramters
     ---------
+
     ccd : CCDData, HDU object, HDUList, or ndarray.
         The CCD to subtract the vertical pattern.
+
     fitting_sections : list of two str, optional.
-        The sections to be used for the vertical pattern estimation.
-        This must be identical to the usual FITS section (i.e., that
-        used in SAO ds9 or IRAF, 1-indexing and last-index-inclusive),
-        not in python. **Give it in the order of ``[<upper>, <lower>]``
-        in FITS y-coordinate.**
+        The sections to be used for the vertical pattern estimation. This must be identical to the
+        usual FITS section (i.e., that used in SAO ds9 or IRAF, 1-indexing and last-index-inclusive),
+        not in python. **Give it in the order of ``[<upper>, <lower>]`` in FITS y-coordinate.**
+
     method : str, optional.
         One of ``['med', 'avg', 'median', 'average', 'mean']``.
+
     sigma, maxiters : float and int, optional
-        A sigma-clipping will be done to remove hot pixels and cosmic
-        rays for estimating the vertical pattern. To turn sigma-clipping
-        off, set ``maxiters=0``.
+        A sigma-clipping will be done to remove hot pixels and cosmic rays for estimating the vertical
+        pattern. To turn sigma-clipping off, set ``maxiters=0``.
+
     sigclip_kw : dict, optional
         The keyword arguments for the sigma clipping.
+
     dtype : str, dtype, optional
         The data type to be returned.
+
     return_pattern : bool, optional.
-        If ``True``, the subtracted pattern will also be returned.
-        Default is ``False``.
+        If `True`, the subtracted pattern will also be returned.
+        Default is `False`.
+
     update_header : bool, optional.
         Whether to update the header if there is any.
+
     Return
     ------
 
     '''
     _t = Time.now()
-    data, hdr = datahdr_parse(ccd)
+    data, hdr = _parse_data_header(ccd)
 
     if fitting_sections is None:
         fitting_sections = VERTICALSECTS
@@ -351,461 +434,318 @@ def lrsubtract(ccd, fitting_sections=["[:, 50:100]", "[:, 924:974]"], method='me
     return nccd
 
 
-def find_fourier_peaks(data, axis=0, max_peaks=3, min_freq=0.01,
-                       sigclip_kw={'sigma_lower': np.inf, 'sigma_upper': 3}):
-    data = np.asarray(data)
-    if data.ndim != 2:
-        raise ValueError("Unly 2-D data is supported.")
-
-    # FFT along axis
-    npix = data.shape[axis]
-    amp = np.abs(np.fft.fft(data, axis=axis)) / npix
-    amp = amp - amp.mean(axis=0, keepdims=True)
-    # ^ axis 0 will be frequency index
-    # _, amp_median, _ = sigma_clipped_stats(amp, axis=axis - 1, std_ddof=1)
-    amp_median = np.median(amp, axis=axis - 1)
-
-    # Select high amplitude frequencies
-    freq2fit = fft_peak_freq(amp_median,
-                             max_peaks=max_peaks,
-                             min_freq=min_freq,
-                             sigclip_kw=sigclip_kw)
-    return freq2fit
-
-
-def _fitter(x, y, mask, freqs, idx):
-    n = len(freqs)
-    p0 = np.zeros(2*n + 1)
-    p0[:n] += 1  # initial guess of amplitudes
-    p0[-1] = 0  # initial guess of constant value, after vertical sub.
-    if np.count_nonzero(mask) == x.size == y.size:
-        return idx, [np.nan]*p0.size, np.zeros(x.size)
-    try:
-        popt, _ = fit_sinusoids(x[~mask], y[~mask], freqs, p0=p0)
-    except RuntimeError:
-        popt = (np.zeros(n), np.zeros(n), np.median(y))
-
-    pattern_idx = multisin(x, freqs, *popt)
-
-    # std_orig = np.std(y[~mask], ddof=1)
-    # std_subt = np.std(pattern_idx[~mask], ddof=1)
-    # if std_subt >= std_orig/10:
-    #     const = np.median(y)
-    #     pattern_idx[:] = const
-    #     nans = np.array([np.nan]*n)
-    #     popt = (nans, nans, const)
-
-    return idx, popt, pattern_idx
-
-
-def fit_fourier(data, freqs, mask=None, filt=None,
-                apply_crrej_mask=False, apply_sigclip_mask=True,
-                fitting_y_sections=None,
-                subtract_x_sections=["[520:900]"],
-                npool=5):
-    """Fit Fourier series along column."""
-    if mask is None:
-        _mask = np.zeros(data.shape).astype(bool)
+def fourier_lrsub(ccd, cut_wavelength=200, copy=True, verbose_bpm=False, verbose=False, **kwargs):
+    if copy:
+        _ccd = ccd.copy()
     else:
-        _mask = mask.copy()
+        _ccd = ccd
+    ccd_l = trim_ccd(_ccd, fits_section="[:512, :]", update_header=False)
+    ccd_l = medfilt_bpm(ccd_l, verbose=verbose_bpm, **kwargs)
+    ccd.header = ccd_l.header  # to add MBPM logs
 
-    if apply_crrej_mask:
-        if filt is None:
-            raise ValueError("filt must be given if apply_crrej_mask is True.")
-        mask_cr = cr_reject_nic(data, filt=filt, verbose=False).mask
-        _mask = _mask | mask_cr
-
-    if fitting_y_sections is None:
-        try:
-            fitting_y_sections = FOURIERSECTS[filt]
-        except KeyError:
-            fitting_y_sections = ["[10:245]", "[850:1010]"]
-    elif isinstance(fitting_y_sections, str):
-        fitting_y_sections = [fitting_y_sections]
-
-    if isinstance(subtract_x_sections, str):
-        subtract_x_sections = [subtract_x_sections]
-
-    noslice = slice(None, None, None)
-    subsls = [(noslice, fitsxy2py(s)[0]) for s in subtract_x_sections]
-    fitsls = [(fitsxy2py(s)[0], noslice) for s in fitting_y_sections]
-
-    fitmask = np.ones(data.shape).astype(bool)  # initialize with masking True
-    submask = np.ones(data.shape).astype(bool)  # initialize with masking True
-    for fitsl in fitsls:
-        fitmask[fitsl] = False
-
-    for subsl in subsls:
-        submask[subsl] = False
-
-    _mask = _mask | fitmask | submask
-
-    if apply_sigclip_mask:
-        _data = np.ma.array(data, mask=mask)
-        mask_sc = sigma_clip(_data, axis=0, sigma=3, maxiters=5).mask
-        _mask = _mask | mask_sc
-
-    ny, nx = data.shape
-    yy, xx = np.mgrid[:ny, :nx]
-
-    pool = Pool(npool)
-    args = [
-        list(yy.T),            # x to eval (= y_index of data, 0~1024)
-        list(data.T),          # y for fit (pixel value)
-        list(_mask.T),         # mask for fit
-        [freqs]*nx,
-        np.arange(nx)          # x_index of data
-    ]
-    res = np.array(pool.starmap(_fitter, np.array(args).T))
-    pool.close()
-    res = res[np.argsort(res[:, 0])]  # sort by index
-    popts = np.array(res[:, 1])
-    pattern = np.stack(res[:, 2], axis=1)
-
-    return pattern, popts, _mask
-
-    # for fitting_section in fitting_sections:
-    #     try:
-    #         fitsl = fitsxy2py(fitting_section)
-    #     except IndexError:  # if only 1-D FITS index is given
-    #         fitsl = [slice(None, None, None), slice(None, None, None)]
-    #         fitsl[axis] = fitsxy2py(fitting_section)
-    #         fitsl = tuple(fitsl)
-
-    #     fitmask[fitsl] = False
-    # # mask all pixels (1) outside the fitting_sections OR (2) mask from
-    # # the input.
-    # fitmask = mask | fitmask
-
-    # pattern = np.zeros(data.shape)
-
-    # pool = Pool(npool)
-    # if axis == 1:
-    #     d2fit = d2fit.T
-    #     m2fit = m2fit.T
-    # args = [
-    #     [idx2fit] * n_fit,  # the ``x``-value for fit (n_fit, 512)
-    #     list(d2fit.T),      # the ``y``-value for fit (475, nx)
-    #     list(m2fit.T),                      # the mask for fit (475, nx)
-    #     [idx2sub] * n_fit,  # the ``x`` to eval. func (0~1024)
-    #     [i for i in idx2sub_iter]           # index along ``axis``
-    # ]
-    # res = np.array(pool.starmap(_fitter, np.array(args).T))
-    # res = [np.argsort(res[:, 0])]  # sort by index
-    # popts = np.array(res[:, 1])
-    # pattern[subsl] += np.stack(res[:, 2], axis=axis - 1)
-
-    # d2fit = data.copy()
-    # d2fit[]
-
-    # fitsls = []
-    # idx2fit = []
-    # d2fit = []
-    # m2fit = []
-    # for fitting_section in fitting_sections:
-    #     try:
-    #         fitsl = fitsxy2py(fitting_section)[axis - 1]
-    #     except IndexError:  # if only 1-D FITS index is given
-    #         fitsl = fitsxy2py(fitting_section)[0]
-
-    #     fitsls.append(fitsl)
-    #     idx2fit.append(np.arange(*fitsl[axis].indices(data.shape[axis])))
-    #     d2fit.append(data[fitsl])
-    #     m2fit.append(mask[fitsl])
-
-    # idx2fit = np.concatenate(idx2fit)
-    # d2fit = np.concatenate(d2fit, axis=axis)
-    # m2fit = np.concatenate(m2fit, axis=axis)
-
-    # idx2sub = np.arange(*subsl[axis].indices(data.shape[axis]))
-    # idx2sub_iter = np.arange(*subsl[axis - 1].indices(data.shape[axis - 1]))
-    # n_fit = idx2sub_iter.size
-
-    # pattern = np.zeros(data.shape)
-
-    # pool = Pool(npool)
-    # if axis == 1:
-    #     d2fit = d2fit.T
-    #     m2fit = m2fit.T
-    # args = [
-    #     [idx2fit] * n_fit,  # the ``x``-value for fit (n_fit, 512)
-    #     list(d2fit.T),      # the ``y``-value for fit (475, nx)
-    #     list(m2fit.T),                      # the mask for fit (475, nx)
-    #     [idx2sub] * n_fit,  # the ``x`` to eval. func (0~1024)
-    #     [i for i in idx2sub_iter]           # index along ``axis``
-    # ]
-    # res = np.array(pool.starmap(_fitter, np.array(args).T))
-    # res = [np.argsort(res[:, 0])]  # sort by index
-    # popts = np.array(res[:, 1])
-    # pattern[subsl] += np.stack(res[:, 2], axis=axis - 1)
-
-    # return pattern, popts, mask
-
-
-'''
-def fouriersub(ccd, mask=None, dtype='float32',
-               peak_infer_section="[900:930, :]",
-               max_peaks=3, min_freq=0.01,
-               subtract_section="[513:,]",
-               fitting_sections=["[:, :250]", "[:, 800:]"],
-               sigclip_kw={'sigma_lower': np.inf, 'sigma_upper': 3},
-               full=True, **kwargs):
-    pattern = []
-    popt = []
-    freq = []
-    idxmap, _ = np.mgrid[:ccd.data.shape[0], :ccd.data.shape[1]]
-    if mask is not None:
-        try:
-            ccd.mask = ccd.mask | mask
-        except TypeError:
-            ccd.mask = mask
-
-    # Note l_or_u should also be changed if the order in this zip is changed.
-    for s1, s2, s3 in zip([NICSECTS['lower'], NICSECTS['upper']],
-                          [fitting_section_lower, fitting_section_upper],
-                          [subtract_section_lower, subtract_section_upper]):
-        half_ccd = trim_image(ccd, fits_section=s1)  # upper or lower
-        half_ccd_infer = trim_image(half_ccd, fits_section=peak_infer_section)
-        half_ccd_infer_cr = cr_reject_nic(half_ccd_infer, verbose=False,
-                                          update_header=False)
-        freq2fit = find_fourier_peaks(half_ccd_infer_cr.data,
-                                      max_peaks=max_peaks,
-                                      min_freq=min_freq,
-                                      sigclip_kw=sigclip_kw)
-        _pattern, _popt = extrapolate_fourier(ccd.data,
-                                              freqs=freq2fit,
-                                              fitting_section=s2,
-                                              subtract_section=s3,
-                                              mask=ccd.mask, axis=0, **kwargs)
-        pattern.append(_pattern[fitsxy2py(s1)])
-        # _pattern_data = np.zeros_like(ccd.data)
-        # _pattern_data[fitsxy2py(s3)] = _pattern
-        # pattern.append(_pattern_data[fitsxy2py(s1)])
-        popt.append(_popt)
-        freq.append(freq2fit)
-
-    pattern = np.vstack(pattern)
-    data_fc = ccd.data - pattern
-    try:
-        ccd_fc = CCDData(data=data_fc)
-    except ValueError:
-        ccd_fc = CCDData(data=data_fc, unit='adu')
-
-    hdr = ccd.header.copy()
-    hdr.add_history(
-        f"""
-Strongest Fourier series found from section {peak_infer_section}. Total
-({len(freq[0])}, {len(freq[1])}) frequencies from the lower and upper
-quadrant are selected, respectively (see FIT-FXXX keys). Then each
-column is fitted with <const + multiple sine> functions, and
-extrapolated from ({fitting_section_lower}, {fitting_section_upper})
-for lower and upper quadrants, respectively. The pattern is estimated
-only for the sections of {subtract_section_lower} and
-{subtract_section_upper}.
-        """.replace("\n", " ")
+    amp_comp = np.fft.rfft(ccd_l.data, axis=0)
+    amp_comp[cut_wavelength:, :] = 0
+    pattern_pure = np.fft.irfft(amp_comp, axis=0)
+    pattern = np.tile(pattern_pure, 2)
+    _ccd.data = _ccd.data - pattern
+    add_to_header(
+        _ccd.header, 'h', verbose=verbose,
+        s=("FFT(left half) to get pattern map (see FFTCUTWL for the cut wavelength); "
+           + "subtracted from both left/right.")
     )
-    hdr["FIT-AXIS"] = ("COL",
-                       "The direction to which Fourier series is fitted.")
-    for k, freqlist in enumerate(freq):
-        L_or_U = "L" if k == 0 else "U"
-        l_or_u = "lower" if k == 0 else "upper"
-        hdr[f"FIT-NF{L_or_U}"] = (
-            len(freqlist),
-            f"No. of freq. used for fit in {l_or_u} quadrant."
-        )
-        for i, f in enumerate(freqlist):
-            hdr[f"FIT-F{L_or_U}{i+1:02d}"] = (
-                f,
-                f"[1/pix] {i+1:02d}-th frequency for {l_or_u} quadrant"
-            )
+    _ccd.header["FFTCUTWL"] = (cut_wavelength, "FFT cut wavelength (amplitude[this:, :] = 0)")
+    return _ccd
 
-    ccd_fc.data = ccd_fc.data.astype(dtype)
-    ccd_fc.header = hdr
 
-    if full:
-        return ccd_fc, pattern, np.vstack(popt), freq
-    return ccd_fc
-'''
+def proc_16_vertical(dir_in, dir_out, dir_log=None,  sigclip_kw=dict(sigma=2, maxiters=5),
+                     fitting_sections=None, method='median', skip_if_exists=True, ignore_nonpol=True,
+                     verbose=0, show_progress=True):
+    '''
+    dir_in, dir_out : path-like
+        The directories where the raw (original) FITS are in and that for the resulting FITS files to
+        be saved.
 
-"""
-def fouriersub(ccd, mask=None, dtype='float32',
-            peak_infer_section="[900:, :]", max_peaks=3, min_freq=0.01,
-            subtract_section_upper="[:, 513:]",
-            subtract_section_lower="[:, :512]",
-            fitting_section_lower="[:, :250]",
-            fitting_section_upper="[:, 800:]",
-            sigclip_kw={'sigma_lower': np.inf, 'sigma_upper': 3},
-            full=True, **kwargs):
-'''
+    verbose : int
+        Larger number means it becomes more verbose::
+            * 0: print nothing
+            * 1: Only very essential things
+            * 2: + verbose for summary CSV file
+            * 3: + the HISTORY in each FITS file's header
+    '''
+    dir_in, dir_out, dir_log = _set_dir_iol(dir_in, dir_out, dir_log)
 
-for fouriersub
-Find Fourier component using columns, subtract by fitting.
-Parameters
-----------
-ccd: CCDData
-    The CCD to be used. It's recommended to include mask, e.g.,
-    by cosmic ray detection.
-mask: ndarray, optional
-    The mask you want add in addition to the one from cosmic-ray
-    removal.
-peak_infer_section : str, optional
-    The section in FITS format to be used for inferring the
-    dominent fourier series. See Note.
-max_peaks : int, optional
-    The maximum number of peaks to be found. See Note.
-subtract_section_upper, subtract_section_lower: str, optional
-    The section in FITS format for the upper and lower quadrants to
-    be subtracted. Currently, the x-axis one must be full range
-    (``:``).
-fitting_section_lower, fitting_section_upper: str, optional
-    The section in FITS format to be used for fitting the
-    dominent fourier series. See Note.
-full: bool, optional.
-    If ``False``, only the resulting fourier pattern subtracted CCD
-    will be returned. Otherwise (default), it will return four
-    things: pattern removed CCD, pattern in ndarray (same shape as
-    ``ccd.data``), ``popt`` which is the fitted parameters (can be
-    fed directly into ``multisin(x, freqs, *popt)``), and the
-    frequencies used in the upper/lower quadrants.
-kwargs:
-    The keyword arguments for ``scipy.optimize.curve_fit``
-    during fitting the sinusoidal functions to
-    ``fitting_section_lower`` and ``fitting_section_upper``.
-Note
-----
-From the section specified by ``peak_infer_section``, first run FFT
-along columns. Then do a robust linear fitting to the index VS
-FFT absolute amplitude (index differ from the FFT frequencies by
-upto addition and/or multiplication by constant(s)). Subtracting
-this linear feature and find frequencies where the residuals
-(amplitude - linear fit) meet both criteria: (1) above
-sigma-clip upper bound and (2) top ``max_peaks`` (default 3).
-This way, only upto ``max_peaks`` peak frequencies will be found.
-Then the sum of ``max_peaks`` sine functions, which have
-amplitude and phase as free parameters, with fixed frequencies,
-will be fitted (at most ``2*max_peaks`` free parameters) based on
-the ``fitting_sections``. Note that I didn't intend to include
-outlier removal in the sinusoidal fitting process. If you wanted
-to reject some pixels, they should have been masked a priori
-(``ccd.mask``) by clear reasons. I believe sigma-clipping in
-_fitting_ is mathematically baseless and must be avoided in any
-science.
-'''
-pattern = []
-popt = []
-freq = []
-idxmap, _ = np.mgrid[:ccd.data.shape[0], :ccd.data.shape[1]]
-if mask is not None:
+    path_summ_in = dir_log/"summary_raw.csv"
+    path_summ_out = dir_log/f"summary_{dir_out.name}.csv"
+
+    summ_raw = _save_or_load_summary(dir_in, path_summ_in, skip_if_exists=skip_if_exists,
+                                     ignore_nonpol=ignore_nonpol, verbose=verbose >= 2)
+    if verbose > 0:
+        print("32-bit -> 16-bit && Vertical pattern subtraction; saving to\n"
+              + f"  * FITS: {dir_out} \n  * CSV : {path_summ_out}")
+    time.sleep(0.5)  # For tqdm to show progress bar properly on Jupyter notebook
+
+    for fpath in iterator(summ_raw['file'], show_progress=show_progress):
+        _ = _do_16bit_vertical(fpath, dir_out, skip_if_exists=skip_if_exists,
+                               sigclip_kw=sigclip_kw, fitting_sections=fitting_sections, method=method,
+                               show_progress=show_progress, verbose=verbose >= 3)
+
+    summ_raw_v = _save_or_load_summary(dir_out, path_summ_out, ignore_nonpol=ignore_nonpol,
+                                       skip_if_exists=skip_if_exists, verbose=verbose >= 2)
+    return summ_raw_v
+
+
+def proc_fourier(dir_in, dir_out, dir_log=None, cut_wavelength=200, med_sub_clip=[-5, 5],
+                 med_rat_clip=[0.5, 2], std_rat_clip=[-5, 5], skip_if_exists=True, ignore_nonpol=True,
+                 verbose=0, show_progress=True):
+    '''
+    dir_out : path-like
+        The directory for the resulting FITS files to be saved, RELATIVE to ``self.dir_work``.
+
+    verbose : int
+        Larger number means it becomes more verbose::
+            * 0: print nothing
+            * 1: Only very essential things
+            * 2: + verbose for summary CSV file
+            * 3: + the HISTORY in each FITS file's header
+    '''
+    dir_in, dir_out, dir_log = _set_dir_iol(dir_in, dir_out, dir_log)
+    fpaths = dir_in.glob("*.fits")
+    path_summ_out = dir_log/f"summary_{dir_out.name}.csv"
+
+    if verbose >= 1:
+        print("Fourier pattern subtraction; saving to"
+              + f"  * FITS: {dir_out} \n  * CSV : {path_summ_out}")
+    time.sleep(0.5)  # For tqdm to show progress bar properly on Jupyter notebook
+
+    for fpath in iterator(fpaths, show_progress=show_progress):
+        _ = _do_fourier(fpath, dir_out, cut_wavelength=cut_wavelength, skip_if_exists=skip_if_exists,
+                        med_sub_clip=med_sub_clip, med_rat_clip=med_rat_clip, std_rat_clip=std_rat_clip,
+                        verbose=verbose >= 3)
+
+    summ_raw_vf = _save_or_load_summary(dir_out, path_summ_out, skip_if_exists=skip_if_exists,
+                                        ignore_nonpol=ignore_nonpol, verbose=verbose >= 2)
+    return summ_raw_vf
+
+
+def make_dark(dir_in, dir_out, dir_log=None, dark_object="DARK", combine='med', reject='sc', sigma=[3., 3.],
+              dark_min=3, skip_if_exists=True, verbose=0, **kwargs):
+    '''
+    verbose : int
+        Larger number means it becomes more verbose::
+            * 0: print nothing
+            * 1: Only very essential things
+            * 2: + progress-like info (printing filter and exptime)
+            * 3: + fits stack info (grouping) + header update
+            * 4: + imcombine verbose
+    '''
+    dir_in, dir_out, dir_log = _set_dir_iol(dir_in, dir_out, dir_log)
+
     try:
-        ccd.mask = ccd.mask | mask
-    except TypeError:
-        ccd.mask = mask
+        _summary = pd.read_csv(dir_log/f"summary_{dir_in.name}.csv")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Summary for {dir_in} is not found in {dir_log}."
+                                + " Try changing dir_in or dir_log.")
 
-# Note l_or_u should also be changed if the order in this zip is changed.
-for s1, s2, s3 in zip([NICSECTS['lower'], NICSECTS['upper']],
-                        [fitting_section_lower, fitting_section_upper],
-                        [subtract_section_lower, subtract_section_upper]):
-    half_ccd = trim_image(ccd, fits_section=s1)  # upper or lower
-    half_ccd_infer = trim_image(half_ccd, fits_section=peak_infer_section)
-    half_ccd_infer_cr = cr_reject_nic(half_ccd_infer, verbose=False,
-                                        update_header=False)
-    freq2fit = find_fourier_peaks(half_ccd_infer_cr.data,
-                                    max_peaks=max_peaks,
-                                    min_freq=min_freq,
-                                    sigclip_kw=sigclip_kw)
-    _pattern, _popt = extrapolate_fourier(ccd.data,
-                                            freqs=freq2fit,
-                                            fitting_section=s2,
-                                            subtract_section=s3,
-                                            mask=ccd.mask, axis=0, **kwargs)
-    pattern.append(_pattern[fitsxy2py(s1)])
-    # _pattern_data = np.zeros_like(ccd.data)
-    # _pattern_data[fitsxy2py(s3)] = _pattern
-    # pattern.append(_pattern_data[fitsxy2py(s1)])
-    popt.append(_popt)
-    freq.append(freq2fit)
+    if skip_if_exists:
+        if verbose >= 1:
+            print("Loading existing dark frames...")
+        _, darks, darkpaths = _load_as_dict(dir_out, ["FILTER", "EXPTIME"], verbose=verbose >= 2)
+        if darks is not None:  # if some darks already exist
+            return darks, darkpaths
+        # else, run the code below
 
-pattern = np.vstack(pattern)
-data_fc = ccd.data - pattern
-try:
-    ccd_fc = CCDData(data=data_fc)
-except ValueError:
-    ccd_fc = CCDData(data=data_fc, unit='adu')
+    if verbose >= 1:
+        print("Making master dark of the night (grouping & combining dark frames).")
 
-hdr = ccd.header.copy()
-hdr.add_history(
-    f'''
-Strongest Fourier series found from section {peak_infer_section}. Total
-({len(freq[0])}, {len(freq[1])}) frequencies from the lower and upper
-quadrant are selected, respectively (see FIT-FXXX keys). Then each
-column is fitted with <const + multiple sine> functions, and
-extrapolated from ({fitting_section_lower}, {fitting_section_upper})
-for lower and upper quadrants, respectively. The pattern is estimated
-only for the sections of {subtract_section_lower} and
-{subtract_section_upper}.
-    '''.replace("\n", " ")
-)
-hdr["FIT-AXIS"] = ("COL",
-                    "The direction to which Fourier series is fitted.")
-for k, freqlist in enumerate(freq):
-    L_or_U = "L" if k == 0 else "U"
-    l_or_u = "lower" if k == 0 else "upper"
-    hdr[f"FIT-NF{L_or_U}"] = (
-        len(freqlist),
-        f"No. of freq. used for fit in {l_or_u} quadrant."
+    darks = group_combine(
+        _summary,
+        type_key=["OBJECT"],
+        type_val=[dark_object],
+        group_key=["FILTER", "EXPTIME"],
+        combine=combine,
+        reject=reject,
+        sigma=sigma,
+        verbose=verbose - 1,
+        **kwargs
     )
-    for i, f in enumerate(freqlist):
-        hdr[f"FIT-F{L_or_U}{i+1:02d}"] = (
-            f,
-            f"[1/pix] {i+1:02d}-th frequency for {l_or_u} quadrant"
-        )
+    darkpaths = {}
+    for k, dark_k in darks.items():
+        filt, exptime = k
+        darks[k].data[dark_k.data < dark_min] = 0
+        add_to_header(darks[k].header, 'h', verbose=verbose >= 3,
+                      s=f"Pixels with value < {dark_min:.2f} in combined dark are replaced with 0.")
+        fstem = f"{filt.lower()}_mdark_{exptime:.1f}"
+        darkpaths[k] = _save(darks[k], dir_out, fstem, return_path=True)
 
-ccd_fc.data = ccd_fc.data.astype(dtype)
-ccd_fc.header = hdr
+    return darks, darkpaths
 
-if full:
-    return ccd_fc, pattern, np.vstack(popt), freq
-return ccd_fc
-"""
 
-'''
-def extrapolate_fourier(data, fitting_section,
-                        subtract_section, freqs, axis=0, mask=None, **kwargs):
-    """Fit Fourier series along column (axis 0) or row (axis 1)."""
-    fitsl = fitsxy2py(fitting_section)
-    subsl = fitsxy2py(subtract_section)
-    d2fit = data[fitsl]
-    if mask is None:
-        mask = np.zeros_like(data).astype(bool)
-    m2fit = mask[fitsl]
-    # patternshape = data[subsl].shape
+def make_fringe(dir_in, dir_out, dir_log=None, dir_dark=None, dir_flat=None,
+                fringe_object=".*\_[sS][kK][yY]", combine='med', reject='sc', sigma=[3., 3.],
+                skip_if_exists=True, verbose=0, **kwargs):
+    dir_in, dir_out, dir_log = _set_dir_iol(dir_in, dir_out, dir_log)
 
-    # idxall = np.arange[data.shape[axis] - 0.1]
-    idx2fit = np.arange(*fitsl[axis].indices(data.shape[axis]))
-    idx2sub = np.arange(*subsl[axis].indices(data.shape[axis]))
-    idx2sub_iter = np.arange(*subsl[axis - 1].indices(data.shape[axis - 1]))
-    print(idx2fit)
-    print(idx2sub)
-    print(idx2sub_iter)
-    # sigclip = sigma_clip(d2fit, sigma=3, maxiters=5, axis=axis)
+    try:
+        _summary = pd.read_csv(dir_log/f"summary_{dir_in.name}.csv")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Summary for {dir_in} is not found in {dir_log}."
+                                + " Try changing dir_in or dir_log.")
 
-    popts = []
-    pattern = np.zeros(data.shape)
-    for i in idx2sub_iter:  # range(patternshape[axis - 1]):
-        if axis == 0:
-            d_i = d2fit[:, i]
-            m_i = m2fit[:, i]  # | sigclip.mask[:, i]
-            popt, _ = fit_sinusoids(idx2fit[~m_i], d_i[~m_i],
-                                    freqs=freqs, **kwargs)
-            pattern[subsl[0], i] = multisin(idx2sub, freqs, *popt)
-        else:
-            d_i = d2fit[i, :]
-            m_i = m2fit[i, :]  # | sigclip.mask[i, :]
+    if skip_if_exists:
+        _, fringes, fringepaths = _load_as_dict(dir_out, ["FILTER", "OBJECT", "EXPTIME", "POL-AGL1"],
+                                                verbose=verbose >= 2)
+        if fringes is not None:  # if some darks already exist
+            return fringes, fringepaths
+        # else, run the code below
 
-            popt, _ = fit_sinusoids(idx2fit[~m_i], d_i[~m_i],
-                                    freqs=freqs, **kwargs)
-            pattern[i, :] = multisin(idx2sub, freqs, *popt)
-        popts.append(popt)
+    if dir_dark is not None:
+        dir_dark, darks, darkpaths = _load_as_dict(dir_dark, ["FILTER", "EXPTIME"], False)
+    else:
+        darks, darkpaths = None, None
 
-    return pattern, popts
-'''
+    if dir_flat is not None:
+        dir_flat, flats, flatpaths = _load_as_dict(dir_flat, ["FILTER"], False)
+    else:
+        raise ValueError("Flat is mandatory for fringe frames at this moment. Please specify flat_dir.")
+
+    if verbose >= 1:
+        print("Making master fringe of the night (grouping & combining sky fringe frames).")
+
+    # FIXME: How to skip if master fringe already exists?!
+    fringes = group_combine(
+        _summary,
+        type_key=["OBJECT"],
+        type_val=[fringe_object],
+        group_key=["FILTER", "OBJECT", "EXPTIME", "POL-AGL1"],
+        combine=combine,
+        reject=reject,
+        sigma=sigma,
+        verbose=verbose >= 2,
+        **kwargs
+    )
+    fringepaths = {}
+    for k, fringe_k in fringes.items():
+        filt, objname, exptime, polagl = k
+        fstem = f"{filt.lower()}_fringe_{objname}_{exptime:.1f}_{polagl:04.1f}"
+        if dir_dark is not None or dir_flat is not None:
+            mdark, mdarkpath = _find_calframe(darks, darkpaths, (filt.upper(), exptime), "Dark", verbose >= 2)
+            mflat, mflatpath = _find_calframe(flats, flatpaths, filt.upper(), "Flat", verbose >= 2)
+            fringes[k] = bdf_process(fringe_k, verbose_bdf=verbose >= 3,
+                                     mdark=mdark, mdarkpath=mdarkpath, mflat=mflat, mflatpath=mflatpath)
+        fringepaths[k] = _save(fringes[k], dir_out, fstem, return_path=True)
+
+
+def preproc_nic(dir_in, dir_out, dir_log=None, objects=None, objects_exclude=False, dir_flat=None,
+                dir_dark=None, dir_fringe=None, skip_if_exists=True, fringe_object=".*\_[sS][kK][yY]",
+                verbose=0):
+    """
+    Parameters
+    ----------
+    objects_include, objects_exclude : str, list-like, None, optional.
+        The FITS files with certain ``OBJECT`` values in headers to be used or unused in the flat
+        correction, respectively.
+
+    """
+    dir_in, dir_out, dir_log = _set_dir_iol(dir_in, dir_out, dir_log)
+    path_summ_out = dir_log/f"summary_{dir_out.name}.csv"
+    if skip_if_exists and path_summ_out.exists():
+        if verbose:
+            print(f"Loading the existing summary CSV file from {path_summ_out}; SKIPPING all preprocessing.")
+        return pd.read_csv(path_summ_out)
+
+    try:
+        _summary = pd.read_csv(dir_log/f"summary_{dir_in.name}.csv")
+        _mask_dark = _summary["OBJECT"].str.fullmatch("dark", case=False)
+        _mask_flat = _summary["OBJECT"].str.fullmatch("flat", case=False)
+        _mask_test = _summary["OBJECT"].str.fullmatch("test", case=False)
+        _mask_fringe = _summary["OBJECT"].str.match(fringe_object)
+        # ^ Fringe is already flat-corrected, so remove it in the process below _summary_filt
+        _summary = _summary[~(_mask_fringe | _mask_flat | _mask_dark | _mask_test)]
+        _summary = _summary.reset_index(drop=True)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Summary for {dir_in} is not found in {dir_log}."
+                                + " Try changing dir_in or dir_log.")
+
+    if verbose >= 1:
+        print("Loading calibration frames...")
+
+    if verbose >= 2:
+        print("  * Flat frames... ", end='')
+    dir_flat, flats, flatpaths = _load_as_dict(dir_flat, ['FILTER'], verbose >= 2)
+
+    if verbose >= 2:
+        print("\n  * Dark frames... ", end='')
+    dir_dark, darks, darkpaths = _load_as_dict(dir_dark, ['FILTER', 'EXPTIME'], verbose >= 2)
+
+    if verbose >= 2:
+        print("\n  * Fringe frames... ", end='')
+    dir_fringe, fringes, fringepaths = _load_as_dict(dir_fringe, ['FILTER', 'OBJECT', 'POL-AGL1'],
+                                                     verbose >= 2)
+
+    if dir_flat is None and dir_dark is None and dir_fringe is None:
+        while True:
+            to_proceed = input("There is no flat/dark/fringe found. Are you sure to proceed? [y/N] ")
+            if to_proceed.lower() in ['', 'N']:
+                return
+            elif to_proceed.lower() not in ['y']:
+                print("Type yes='y', NO='', 'n'. ")
+
+    objects, objects_exclude = _sanitize_objects(objects, objects_exclude)
+    objnames = np.unique(_summary["OBJECT"])
+
+    if verbose >= 1:
+        print(f"Flat correction (&& dark and fringe if given); saving to {dir_out}")
+
+    for filt in 'jhk':
+        if verbose >= 1:
+            print(f"  * {filt.upper()}: ", end=' ')
+        _summary_filt = _summary[_summary["FILTER"] == filt.upper()]
+        mflat, mflatpath = _find_calframe(flats, flatpaths, filt.upper(), "Flat", verbose >= 2)
+
+        for objname in objnames:
+            if ((objects_exclude and (objname in objects))
+                    or (not objects_exclude and (objname not in objects))):
+                continue
+
+            if verbose >= 1:
+                print(objname, end='... ')
+
+            _summary_obj = _summary_filt[_summary_filt["OBJECT"].str.match(objname)]
+            _summary_obj = _summary_obj.reset_index(drop=True)
+            for i, row in _summary_obj.iterrows():
+                setid = 1 + i//4
+                fpath = Path(row['file'])
+                ccd = load_ccd(fpath)
+                hdr = ccd.header
+                val_dark = (filt.upper(), hdr["EXPTIME"])
+                val_frin = (filt.upper(), hdr["POL-AGL1"], hdr["OBJECT"] + "_sky")
+                if verbose >= 2:
+                    print(fpath)
+                mdark, mdarkpath = _find_calframe(darks, darkpaths, val_dark, "Dark", verbose >= 2)
+                mfringe, mfringepath = _find_calframe(fringes, fringepaths, val_frin, "Fringe", verbose >= 2)
+
+                suffix = ''
+                suffix += "D" if mdark is not None else ''
+                suffix += "F" if mflat is not None else ''
+                suffix += "Fr" if mfringe is not None else ''
+
+                if verbose >= 3:
+                    print("\n", fpath)
+
+                nccd = bdf_process(ccd,
+                                   mflatpath=mflatpath, mflat=mflat,
+                                   mdarkpath=mdarkpath, mdark=mdark,
+                                   mfringepath=mfringepath, mfringe=mfringe,
+                                   verbose_bdf=verbose >= 3)
+                nccd.header["SETID"] = (setid, "Pol mode set number of OBJECT on the night")
+                nccds = split_oe(nccd, verbose=verbose >= 3)
+                for oe, nccd_oe in zip('oe', nccds):
+                    _save(nccd_oe, dir_out, fpath.stem + suffix + f"_{oe}")
+
+            if verbose >= 1:
+                print()
+
+    summ_reduced = _save_or_load_summary(dir_out, path_summ_out, keywords=USEFUL_KEYS+["OERAY", "SETID"],
+                                         skip_if_exists=skip_if_exists, verbose=verbose >= 2)
+
+    return summ_reduced
