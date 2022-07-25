@@ -1,4 +1,6 @@
 # NICpolpy
+ (Currently it is under a very freqeunt and abrupt updates. Please contact me directly if you want to use it: ysbach93@gmail.com . We are planning to finalize it within 2022.)
+
 Nishi Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetry photometry pipeline. Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
 
 Few things special for NHAO NIC polarimetric mode are that
