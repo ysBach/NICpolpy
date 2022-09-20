@@ -1109,7 +1109,7 @@ def thumb_with_stat(
             infostr.append(f"{k:<12s}: {v:.4f}")
         elif is_list_like(v):  # percentiles
             vstrs = str(v)[1:-1].replace(",", "").split()  # e.g., ["0.1", "1", "10", "100"]
-            vstr = [f"{float(v):2.4f}"[1:-1] for v in vstrs]
+            vstr = [f"{float(v):2.4f}" for v in vstrs]
             # [1:-1] to convert '0.1' to 0.1
             infostr.append(f"{k:<12s}: {vstr}")
         else:
