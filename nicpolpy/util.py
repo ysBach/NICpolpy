@@ -158,7 +158,7 @@ VERTICALSECTS = ["[:, 100:250]", "[:, 850:974]"]
 # TODO: Let these be functions with default arg as "recent" so the most recent
 # measurement of these are
 # returned.
-GAIN = dict(J=9.8, H=9.8, K=9.4)
+GAIN = dict(J=9.9, H=9.8, K=9.4)
 RDNOISE = dict(J=37, H=36, K=35)
 FLATERR = dict(J=0.02, H=0.02, K=0.02)
 
@@ -1160,7 +1160,7 @@ def thumb_with_satpix(
     # ^ assuming nx, ny are the same for J, H, K
 
     for counter in iterator(_df["COUNTER"].unique(), show_progress=show_progress):
-        df_jhk = (df.loc[df["COUNTER"] == counter])  # 3 rows (JHK)
+        df_jhk = (_df.loc[_df["COUNTER"] == counter])  # 3 rows (JHK)
         df_jhk.reset_index(drop=False, inplace=True)
         objname = df_jhk.loc[0, "OBJECT"]
         setid = df_jhk.loc[0, "SETID"]
