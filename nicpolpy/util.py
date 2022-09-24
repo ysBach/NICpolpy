@@ -158,7 +158,7 @@ VERTICALSECTS = ["[:, 100:250]", "[:, 850:974]"]
 # TODO: Let these be functions with default arg as "recent" so the most recent
 # measurement of these are
 # returned.
-GAIN = dict(J=9.9, H=9.8, K=9.4)
+GAIN = dict(J=9.9, H=9.8, K=9.5)
 RDNOISE = dict(J=37, H=36, K=35)
 FLATERR = dict(J=0.02, H=0.02, K=0.02)
 
