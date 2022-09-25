@@ -866,7 +866,7 @@ class NICPolReduc(NICPolReducMixin):
                 mflatpath=mflatpath if isinstance(mflatpath, str) else None,
                 flat_mask=flat_mask,
                 flat_fill=flat_fill,
-                dark_scale=True,
+                dark_scale=False,
                 verbose_bdf=self.verbose >= 2,
             )
             ccd.header["LV2FRM"] = str(fpath)
