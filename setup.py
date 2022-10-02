@@ -18,7 +18,7 @@ setup(
     name="nicpolpy",
     version="0.1.dev",
     author="Yoonsoo P. Bach",
-    author_email="dbstn95@gmail.com",
+    author_email="ysbach93@gmail.com",
     description="",
     license="",
     keywords="",
