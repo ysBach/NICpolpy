@@ -438,50 +438,50 @@ def quick_detect_obj(
     return obj, segm, conv
 
 
-def vertical_correct_remaining(
-        img,
-        filt=None,
-        mask=None,
-        thresh_ksig=3,
-        scale_maxiters=5,
-        gsigma=6,
-        box_size=(50, 50),
-        filter_size=(5, 5),
-        minarea=50,
-        sigclip_kw=dict(sigma=2, maxiters=5)
-):
-    """ Removes still remaining vertical pattern in the o/e frame.
-    """
-    filt = infer_filter(filt)
-    gain = GAIN[filt]
-    rdn = RDNOISE[filt]
-    mask_sat = img > SATLEVEL[filt]
-    obj, segm, img0detect = quick_detect_obj(
-        img,
-        thresh_ksig=thresh_ksig,
-        minarea=minarea,
-        gsigma=gsigma,
-        box_size=box_size,
-        filter_size=filter_size
-    )
-    if len(obj) > 0:
-        obj = obj.loc[obj["flux"] == obj["flux"].max()]
-        mask = mask_sat | (segm > 0)
-        _bkg_kw = dict(mask=mask, box_size=(10, 10), filter_size=(5, 3))
-        # -- Subtract 1: img1 = original - sep_back
-        _bkg1 = sep_back(img, **_bkg_kw)
-        bkg1 = _bkg1.back() - _bkg1.globalback  # only the pattern.
-        img1 = img - bkg1
-        # -- Subtract 2: img2 = original - (vertical pattern from (original - sep_back))
-        _bkg2 = sigma_clipped_stats(img1, mask=mask, axis=0)[1]
-        _bkg2med = np.median(_bkg2)
-        _x = np.arange(0, _bkg2.size)
-        bkg2 = csaps.csaps(_x, _bkg2 - _bkg2med, _x, smooth=0.1)
-        img2 = img0 - bkg2  # subtract from the original image
-        err = yfu.errormap(img2, gain_epadu=gain, rdnoise_electron=rdn)
+# def vertical_correct_remaining(
+#         img,
+#         filt=None,
+#         mask=None,
+#         thresh_ksig=3,
+#         scale_maxiters=5,
+#         gsigma=6,
+#         box_size=(50, 50),
+#         filter_size=(5, 5),
+#         minarea=50,
+#         sigclip_kw=dict(sigma=2, maxiters=5)
+# ):
+#     """ Removes still remaining vertical pattern in the o/e frame.
+#     """
+#     filt = infer_filter(filt)
+#     gain = GAIN[filt]
+#     rdn = RDNOISE[filt]
+#     mask_sat = img > SATLEVEL[filt]
+#     obj, segm, img0detect = quick_detect_obj(
+#         img,
+#         thresh_ksig=thresh_ksig,
+#         minarea=minarea,
+#         gsigma=gsigma,
+#         box_size=box_size,
+#         filter_size=filter_size
+#     )
+#     if len(obj) > 0:
+#         obj = obj.loc[obj["flux"] == obj["flux"].max()]
+#         mask = mask_sat | (segm > 0)
+#         _bkg_kw = dict(mask=mask, box_size=(10, 10), filter_size=(5, 3))
+#         # -- Subtract 1: img1 = original - sep_back
+#         _bkg1 = sep_back(img, **_bkg_kw)
+#         bkg1 = _bkg1.back() - _bkg1.globalback  # only the pattern.
+#         img1 = img - bkg1
+#         # -- Subtract 2: img2 = original - (vertical pattern from (original - sep_back))
+#         _bkg2 = sigma_clipped_stats(img1, mask=mask, axis=0)[1]
+#         _bkg2med = np.median(_bkg2)
+#         _x = np.arange(0, _bkg2.size)
+#         bkg2 = csaps.csaps(_x, _bkg2 - _bkg2med, _x, smooth=0.1)
+#         img2 = img0 - bkg2  # subtract from the original image
+#         err = yfu.errormap(img2, gain_epadu=gain, rdnoise_electron=rdn)
 
-    _bkg1 = sep_back(img, mask=mask, box_size=box_size, filter_size=filter_size)
-    bkg1 = _bkg1.back() - _bkg1.globalback  # only the pattern.
-    img1 = img - bkg1
-    _bkg2 = sigma_clipped_stats(img1, mask=mask, axis=0, **sigclip_kw)[1]
-    return _bkg2 - np.median(_bkg2)  # only the pattern.
+#     _bkg1 = sep_back(img, mask=mask, box_size=box_size, filter_size=filter_size)
+#     bkg1 = _bkg1.back() - _bkg1.globalback  # only the pattern.
+#     img1 = img - bkg1
+#     _bkg2 = sigma_clipped_stats(img1, mask=mask, axis=0, **sigclip_kw)[1]
+#     return _bkg2 - np.median(_bkg2)  # only the pattern.

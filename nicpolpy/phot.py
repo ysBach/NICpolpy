@@ -1,7 +1,7 @@
 import numpy as np
 from astropy.stats import sigma_clipped_stats
 from scipy.ndimage import gaussian_filter
-from .ysphotutilpy4nicpolpy import sep_back
+from .ysphotutilpy4nicpolpy import sep_back, sep_extract
 
 
 __all__ = ["quick_detect_obj"]
@@ -30,7 +30,7 @@ def quick_detect_obj(
     for _scale in range(scale_maxiters):
         scale = 0.9**_scale
         thresh = thresh_ksig*std_conv*scale
-        obj, segm = ypu.sep_extract(
+        obj, segm = sep_extract(
             conv, thresh, bkg=med_conv, minarea=minarea*scale,
             sort_by='flux', sort_ascending=False
         )
