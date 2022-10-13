@@ -1,13 +1,13 @@
 from pathlib import Path
 
 import numpy as np
-from astropy.nddata import CCDData
 from astropy.stats import sigma_clipped_stats
 from scipy.ndimage import gaussian_filter
-from ysfitsutilpy import (ccdred, cmt2hdr, df_selector, errormap, fixpix,
-                          group_combine, hedit, imslice, listify, load_ccd,
-                          ndfy, run_reduc_plan)
-from ysphotutilpy import sep_back, sep_extract
+
+from .ysfitsutilpy4nicpolpy import (cmt2hdr, df_selector, errormap,
+                                    group_combine, hedit, listify, ndfy,
+                                    run_reduc_plan)
+from .ysphotutilpy4nicpolpy import sep_back, sep_extract
 
 from .util import (FLATERR, GAIN, RDNOISE, SATLEVEL, _load_as_dict, _save,
                    infer_filter)

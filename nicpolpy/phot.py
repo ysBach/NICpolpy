@@ -1,7 +1,7 @@
 import numpy as np
 from astropy.stats import sigma_clipped_stats
 from scipy.ndimage import gaussian_filter
-import ysphotutilpy as ypu
+from .ysphotutilpy4nicpolpy import sep_back
 
 
 __all__ = ["quick_detect_obj"]
@@ -25,7 +25,7 @@ def quick_detect_obj(
     #   best fit Gaussian amplitude at the pixel * const + const
     #   (see StetsonPB 1987 PASP 99 191, eq. (1))
     conv = gaussian_filter(image, gsigma)  # gsigma = 6 ~ FWHM/2.35 with FWHM ~ 13-15 pix
-    conv -= ypu.sep_back(conv, mask=mask, box_size=box_size, filter_size=filter_size).back()
+    conv -= sep_back(conv, mask=mask, box_size=box_size, filter_size=filter_size).back()
     _, med_conv, std_conv = sigma_clipped_stats(conv.ravel())
     for _scale in range(scale_maxiters):
         scale = 0.9**_scale

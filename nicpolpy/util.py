@@ -1,19 +1,21 @@
 from pathlib import Path
+from warnings import warn
 
 import numpy as np
 import pandas as pd
 from astropy import units as u
 from astropy.nddata import CCDData
-from astropy.time import Time
 from astropy.stats import sigma_clipped_stats
-from astropy.visualization import LinearStretch, ImageNormalize, ZScaleInterval, simple_norm
+from astropy.time import Time
+from astropy.visualization import (ImageNormalize, LinearStretch,
+                                   ZScaleInterval, simple_norm)
 from matplotlib import pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
-from ysfitsutilpy import (CCDData_astype, cmt2hdr, find_extpix, find_satpix,
-                          slicefy, give_stats, is_list_like, load_ccd,
-                          make_summary, imslice)
-from warnings import warn
 
+from .ysfitsutilpy4nicpolpy import (CCDData_astype, cmt2hdr, find_extpix,
+                                    find_satpix, give_stats, imslice,
+                                    is_list_like, load_ccd, make_summary,
+                                    slicefy)
 
 __all__ = ["iterator",
            "HDR_KEYS", "PLANCOL_INIT",

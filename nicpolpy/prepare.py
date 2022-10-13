@@ -15,9 +15,9 @@ import pandas as pd
 from astropy.nddata import CCDData
 from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
-from ysfitsutilpy import (CCDData_astype, _parse_data_header, cmt2hdr, crrej,
-                          slicefy, fixpix, load_ccd, medfilt_bpm, imslice,
-                          update_process)
+from .ysfitsutilpy4nicpolpy import (CCDData_astype, _parse_data_header, cmt2hdr, crrej,
+                                    slicefy, fixpix, load_ccd, medfilt_bpm, imslice,
+                                    update_process)
 
 from .util import (BPM_KW, GAIN, HDR_KEYS, NIC_CRREJ_KEYS, OBJSLICES, RDNOISE,
                    VERTICALSECTS, _load_as_dict, _sanitize_fits, _save,
@@ -222,7 +222,6 @@ def fourier_lrsub(
 def sep_extract_nic():
     """
     """
-
 
     return
 

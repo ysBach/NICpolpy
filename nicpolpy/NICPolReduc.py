@@ -6,16 +6,17 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 from astropy.stats import sigma_clipped_stats
-from ysfitsutilpy import (LACOSMIC_CRREJ, ccdred, crrej, df_selector,
-                          fixpix, inputs2list, listify, load_ccd,
-                          make_reduc_planner)
+
+from .ysfitsutilpy4nicpolpy import (LACOSMIC_CRREJ, ccdred, crrej, df_selector,
+                                    fixpix, inputs2list, listify, load_ccd,
+                                    make_reduc_planner)
 
 from .prepare import _do_16bit_vertical, _do_vfv, make_darkmask
 from .preproc import fringe_scale_mask, make_cal
-from .util import (BPM_KW, GAIN, GROUPER, HDR_KEYS, MATCHER,
-                   NIC_CRREJ_KEYS, PLANCOL_INIT, RDNOISE, SORT_MAP,
-                   _load_as_dict, _save, iterator, split_oe, summary_nic,
-                   thumb_with_satpix, thumb_with_stat, _set_fstem_proc)
+from .util import (BPM_KW, GAIN, GROUPER, HDR_KEYS, MATCHER, NIC_CRREJ_KEYS,
+                   PLANCOL_INIT, RDNOISE, SORT_MAP, _load_as_dict, _save,
+                   _set_fstem_proc, iterator, split_oe, summary_nic,
+                   thumb_with_satpix, thumb_with_stat)
 
 __all__ = ["NICPolReduc"]
 
@@ -1080,5 +1081,3 @@ class NICPolReduc(NICPolReducMixin):
         return self._save_summ(
             4, add_keys=["OERAY", "NSATPIX", "CRNPIX"], thumb_kw=thumb_kw
         )
-
-
