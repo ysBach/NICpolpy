@@ -1,6 +1,5 @@
 from .aperture import *
 from .apphot import *
-from .astroim import *
 from .background import *
 from .center import *
 from .daopsf import *
