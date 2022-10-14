@@ -14,6 +14,7 @@ You will need Python **3.7+** (recommended: **3.8+**, [Anaconda 3](https://www.a
 * astroscrappy
 * sep
 * astroquery
+* tqdm
 * pandas > 1.0
 * astropy >= 5.0
 * photutils >= 0.7
