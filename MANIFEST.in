@@ -1,3 +1,6 @@
 //# include nicpolpy/mask/*.fits
 //# include nicpolpy/dark/*.fits
 //# include nicpolpy/flat/*.fits
+include LICENSE
+include README.md
+recursive-exclude tests *
