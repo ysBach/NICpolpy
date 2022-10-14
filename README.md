@@ -48,7 +48,7 @@ The data nomenclature (``lv`` means "level"):
    - ``lv2`` is *the* **"raw" data**, if it were not for those artificial patterns.
    - Thus, now the remaining reduction processes are similar to usual observations.
 4. ``lv3``: DARK/FLAT correction and FIXPIX using MASK frames. The nominal "preprocessed" image (32-bit float).
-5. LV4: After CR rejection and FRINGE subtraction, (32-bit float).
+5. ``lv4``: After CR rejection and FRINGE subtraction, (32-bit float).
     - Rarely, CR rejection corrupts the image severely by detecting too many cosmic rays (see CRNPIX in the header).
     - The sky in IR (JHK bands) can change rather quickly, so that the fringe subtraction may only increase the artifact. Also, fringe subtraction has only marginal effect in the final Stokes' parameter (BachYP+2022, in prep). Thus, we recommend skip the fringe subtraction.
 
