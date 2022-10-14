@@ -55,10 +55,9 @@ The data nomenclature (``lv`` means "level"):
 <details><summary><u>A note (click)<\u></summary>
 <p>
 
-(
-below is just an idea, not actually implemented:
-- N.B. In the vertical pattern subtraction by median value along the column, the output may contain integer + 0.5 pixel value. Meanwhile, NIC has saturation at well below 10k ADU, and therefore, the range of ``-32,768`` to ``32,767`` is more than enough to store all meaningful data. Combining these two information, `NICpolpy` **multiplies 2** to the vertical-pattern-subtracted images, and store it as `int16` to save storage by half for this intermediate data. Just in case, by default, any pixel larger than 15000 (`maxval`) or smaller than -15000 (`minval`) will be replaced by -32768 (`blankval` or ``"BLANK"`` in FITS header).
-)
+Below is just an idea, not actually implemented:
+- In the vertical pattern subtraction by median value along the column, the output may contain integer + 0.5 pixel value. Meanwhile, NIC has saturation at well below 10k ADU, and therefore, the range of ``-32,768`` to ``32,767`` is more than enough to store all meaningful data. Combining these two information, `NICpolpy` **multiplies 2** to the vertical-pattern-subtracted images, and store it as `int16` to save storage by half for this intermediate data. Just in case, by default, any pixel larger than 15000 (`maxval`) or smaller than -15000 (`minval`) will be replaced by -32768 (`blankval` or ``"BLANK"`` in FITS header).
+
 
 </p>
 </details>
