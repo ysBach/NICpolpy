@@ -19,6 +19,11 @@ You will need Python **3.7+** (recommended: **3.8+**, [Anaconda 3](https://www.a
 * photutils >= 0.7
 * ccdproc >= 1.3
 
+Simply do
+
+    $ pip install nicpolpy
+
+or if you prefer conda install:
 ```
 # On terminal
 conda install -c astropy astropy astroquery photutils ccdproc astroscrappy
