@@ -11,7 +11,6 @@ from astroquery.jplhorizons import Horizons
 from astroquery.vizier import Vizier
 from astroquery.mast import Catalogs
 from scipy.interpolate import UnivariateSpline
-from xarray import Coordinate
 
 from .util import bezel_mask
 
