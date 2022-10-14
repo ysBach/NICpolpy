@@ -64,12 +64,12 @@ Below is just an idea, not actually implemented:
 
 ### 1-2. A Short Summary of the Output Files/Directories
 After reduction, you may freely remove LV1 and 2 data to save your storage. They are intermediate data produced just in case. A size of single FITS frame is
-- LV0: 4.2 MB
-- LV1: 4.2 MB
-- LV2: 4.2 MB
-- LV3: 280 kB * 2 = 560 kB (o-/e-ray splitted)
-- LV4: 280 kB * 2 = 560 kB (o-/e-ray splitted)
-- log: 12.8 MB (MFLAT) + 3.3 MB (IMASK) + [~ 15 MB/DARK_EXPTIME] + [~3.3 MB/DARKMASK]
+- ``lv0``: 4.2 MB
+- ``lv1``: 4.2 MB
+- ``lv2``: 4.2 MB
+- ``lv3``: 280 kB * 2 = 560 kB (o-/e-ray splitted)
+- ``lv4``: 280 kB * 2 = 560 kB (o-/e-ray splitted)
+- ``logs/``: 12.8 MB (MFLAT) + 3.3 MB (IMASK) + [~ 15 MB/DARK_EXPTIME] + [~3.3 MB/DARKMASK] + something more...
 In total, the log directory (by default ``__logs/``) will be likely \~ 50 MB. For 10-set observation at NIC, i.e., 40 frames per filter = 120 FITS frames, will have LV0 \~ LV1 \~ LV2 \~ 0.5 GB, LV3 \~ LV4 \~ 0.1 GB thus in total, <\~ 2 GB.
 
 Names:
