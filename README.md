@@ -21,7 +21,7 @@ You will need Python **3.7+** (recommended: **3.8+**, [Anaconda 3](https://www.a
 
 ```
 # On terminal
-conda install -c numpy scipy pandas astropy astroquery photutils ccdproc astroscrappy
+conda install -c astropy astropy astroquery photutils ccdproc astroscrappy
 conda install -c openastronomy sep
 conda install -c conda-forge fitsio  # Windows may fail - please just ignore.
 pip install nicpolpy
