@@ -3,8 +3,14 @@
 
 Nishi-Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
 
+## TL;DR
+1. Download flat/mask from the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm)
+2. $ pip install NICpolpy
+3. See ``example/`` directory in the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm).
+4. Refer to [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/StarsAndGalaxies.html) (submitted)
 
-## 0. Installation
+
+## 1. Installation
 To use this package, you need to have the pre-made master flat and initial mask frames. They are downloadable at [this repository](https://github.com/ysBach/nicpolpy_sag22sm). There, you can also find the example usage of ``NICpolpy``.
 
 You will need Python **3.7+** (recommended: **3.8+**, [Anaconda 3](https://www.anaconda.com/distribution/#download-section)). You also need the following packages:
@@ -33,10 +39,8 @@ conda install -c conda-forge fitsio  # Windows may fail - please just ignore.
 pip install nicpolpy
 ```
 
-## 1. Descriptions
-
-
-For detailed descriptions about image reduction steps, please refer to BachYP et al. (2022) SAG (Stars And Galaxies), in prep (you may freely contact via email above). Below are simple summary of that publication.
+## 2. Descriptions
+For detailed descriptions about image reduction steps, please refer to [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/StarsAndGalaxies.html) (submitted) (you may freely contact via email above). Below are simple summary of that publication.
 
 ### 1-1. A Short Summary of Data Reduction Steps
 Few things special for NHAO NIC polarimetric mode:
