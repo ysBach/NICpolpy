@@ -1,4 +1,7 @@
 # NICpolpy
+
+[![DOI](https://zenodo.org/badge/219398338.svg)](https://zenodo.org/badge/latestdoi/219398338)
+
  (ysbach93@gmail.com)
 
 Nishi-Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
