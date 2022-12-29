@@ -7,16 +7,50 @@
 Nishi-Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
 
 ## TL;DR
-1. Download flat/mask from the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm)
+1. Download flat/mask from the Supporting Materials: [SM repo](https://github.com/ysBach/nicpolpy_sag22sm)
 2. $ pip install NICpolpy
-3. See ``example/`` directory in the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm).
-4. Refer to [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/StarsAndGalaxies.html) (submitted)
+
+* Practical usage: [SM repo](https://github.com/ysBach/nicpolpy_sag22sm)'s ``example/`` directory.
+
+* Theoretical details: [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4).
+
+## Citation
+Please consider the following citations:
+BibTeX:
+```
+@software{nicpolpy_v013,
+  author       = {Yoonsoo P. Bach},
+  title        = {ysBach/NICpolpy: NICpolpy v0.1.3},
+  month        = dec,
+  year         = 2022,
+  publisher    = {Zenodo},
+  version      = {publish},
+  doi          = {10.5281/zenodo.7391454},
+  url          = {https://doi.org/10.5281/zenodo.7391454}
+}
+@ARTICLE{Bach+22SAG,
+       author = {{Bach}, Y. P. and {Ishiguro}, M. and {Takahashi}, J. and {Geem}, J.},
+        title = "{Data Reduction Pipeline for the NIC Polarimetry Mode in Python, NICPolpy}",
+      journal = {Stars and Galaxies},
+         year = 2022,
+        month = dec,
+          eid = {arXiv:},
+        pages = {arXiv:},
+archivePrefix = {arXiv},
+       eprint = {},
+ primaryClass = {astro-ph.EP},
+       volume = {5},
+       number = {4},
+        pages = {1-18},
+}
+```
+(First: ``NICpolpy`` Zenodo // Second: Implementation details document)
 
 
 ## 1. Installation
-To use this package, you need to have the pre-made master flat and initial mask frames. They are downloadable at [this repository](https://github.com/ysBach/nicpolpy_sag22sm). There, you can also find the example usage of ``NICpolpy``.
+To use this package, you need to have the pre-made master flat and initial mask frames. They are downloadable at the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm). There, you can also find the example usage of ``NICpolpy``.
 
-You will need Python **3.7+** (recommended: **3.8+**, [Anaconda 3](https://www.anaconda.com/distribution/#download-section)). You also need the following packages:
+You will need Python **3.7** (recommended: **3.10+**, [Anaconda 3](https://www.anaconda.com/distribution/#download-section)). You also need the following packages:
 * numpy
 * scipy
 * bottleneck
@@ -43,29 +77,38 @@ pip install nicpolpy
 ```
 
 ## 2. Descriptions
-For detailed descriptions about image reduction steps, please refer to [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/StarsAndGalaxies.html) (submitted) (you may freely contact via email above). Below are simple summary of that publication.
+For detailed descriptions about image reduction steps, please refer to [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4). Below are simple summary of that publication.
 
-### 1-1. A Short Summary of Data Reduction Steps
+### 1-1. A Short Note
 Few things special for NHAO NIC polarimetric mode:
+1. **MASK** means the default bad-pixel map.
+  * Assumed to be **present prior to any data reduction**.
+2. **FLAT** means the master flat field image (normalized to 1)
+  * Assumed to be **present prior to any data reduction**.
+  * FLATs are not taken every night. It is taken only rarely, so the majority of this package is assuming you already have the master flats for each FILTER.
+3. **DARK**s means the *nightly* dark frames.
+  * Dark frames are not taken every night. It's often missing. Thus, the code has a flexibility for the user to combine nightly dark frames, use dark of different nights (by providing relative paths), or completely ignore dark subtraction process.
+4. Unfortunately, dark current often do not follow linear law (pixel value is not proportional to EXPTIME). Therefore, it is best to simply mask hot dark pixels and interpolate the pixel value based on nearby ones at the last stage, rather than relying on DARK frames.
+5. As dark current changes abruptly over the temperature, a difficulty is that the locations/severity of such "bad" pixels may vary not only over time, but also on the efficiency of the cooling system. Although it's rare, the system *can* suffer from cooling problem, and therefore, the MASK frames must be differ on such nights (this can even be seen from visual inspection). Sometimes the pixels should be masked are permanently changed.
 
-1. **MASK**s are assumed to be present prior to any data reduction.
-2. **FLAT**s are assumed to be present prior to any data reduction. FLATs are not taken every night. It is taken only rarely, so the majority of this package is assuming you already have the master flats for each FILTER.
-3. **DARK**s are not taken every night. Sometimes it's missing, but sometimes you have DARK frames. Thus, the code has a flexibility for the user to combine nightly DARK.
-4. Unfortunately, dark current on hot pixels often do not follow linear law (pixel value is not proportional to EXPTIME). Therefore, it is best to simply mask such pixels and interpolate the pixel value based on nearby ones, rather than relying on DARK frames.
-5. As NIC has NIR sensor, temperature is critical to hot pixels. Thus a difficulty is that the locations/severity of such "bad" pixels may vary not only over time, but also on the efficiency of the cooling system. Although it's rare, the system *can* suffer from cooling problem, and therefore, the MASK frames must be differ on such nights (this can even be seen from visual inspection).
+* ``mdark``, ``mflat``, ``mfrin`` : master dark, flat, fringe
+* ``ifrin`` : the initial fringes (LV3, i.e., after dark/flat corrections). The master fringe is the combination of the ifrin frames.
+* ``imask``, ``dmask``, ``mmask`` : initial input mask (given a priori), dark mask (based on nightly dark frames), master mask (made by combining imask and nightly dark, if exists)
 
-The data nomenclature (``lv`` means "level"):
-1. ``lv0``: The very raw data (32-bit int, not 16-bit; so wasting double the storage, unfortunately..).
+### 1-2. A Short Summary of Data Reduction Steps
+(``lv`` means "level")
+1. ``lv0``: The original, very raw data (32-bit int, not 16-bit; so wasting double the storage, unfortunately..).
 2. ``lv1``: After vertical pattern subtraction (32-bit int)
 3. ``lv2``: Fourier pattern removal. (32-bit float)
    - ``lv2`` is *the* **"raw" data**, if it were not for those artificial patterns.
    - Thus, now the remaining reduction processes are similar to usual observations.
 4. ``lv3``: DARK/FLAT correction and FIXPIX using MASK frames. The nominal "preprocessed" image (32-bit float).
+   - FIXPIX means the interpolation of pixels indicated by MASK. The name originates from IRAF.PROTO.FIXPIX task.
 5. ``lv4``: After CR rejection and FRINGE subtraction, (32-bit float).
-    - Rarely, CR rejection corrupts the image severely by detecting too many cosmic rays (see CRNPIX in the header).
+    - Rarely, CR rejection corrupts the image severely by detecting too many cosmic rays (see CRNPIX in the header). If such thing happens, you may want to either turn off CR rejection, or manually find the best parameters for the CR rejection.
     - The sky in IR (JHK bands) can change rather quickly, so that the fringe subtraction may only increase the artifact. Also, fringe subtraction has only marginal effect in the final Stokes' parameter (BachYP+2022, in prep). Thus, we recommend skip the fringe subtraction.
 
-<details><summary><u>A note (click)<\u></summary>
+<details><summary><u>An idea (click)</u></summary>
 <p>
 
 Below is just an idea, not actually implemented:
@@ -75,7 +118,7 @@ Below is just an idea, not actually implemented:
 </p>
 </details>
 
-### 1-2. A Short Summary of the Output Files/Directories
+### 1-3. A Short Summary of the Output Files/Directories
 After reduction, you may freely remove LV1 and 2 data to save your storage. They are intermediate data produced just in case. A size of single FITS frame is
 - ``lv0``: 4.2 MB
 - ``lv1``: 4.2 MB
@@ -84,9 +127,4 @@ After reduction, you may freely remove LV1 and 2 data to save your storage. They
 - ``lv4``: 280 kB * 2 = 560 kB (o-/e-ray splitted)
 - ``logs/``: 12.8 MB (MFLAT) + 3.3 MB (IMASK) + [~ 15 MB/DARK_EXPTIME] + [~3.3 MB/DARKMASK] + something more...
 In total, the log directory (by default ``__logs/``) will be likely \~ 50 MB. For 10-set observation at NIC, i.e., 40 frames per filter = 120 FITS frames, will have LV0 \~ LV1 \~ LV2 \~ 0.5 GB, LV3 \~ LV4 \~ 0.1 GB thus in total, <\~ 2 GB.
-
-Names:
-* mdark, mflat, mfrin : master dark, flat, fringe
-* ifrin : the initial fringes (LV3, i.e., after dark/flat corrections). The master fringe is the combination of the ifrin frames.
-* imask, dmask, mmask : initial input mask (given a priori), dark mask (based on nightly dark frames), master mask (made by combining imask and nightly dark, if exists)
 
