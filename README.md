@@ -7,12 +7,12 @@
 Nishi-Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
 
 ## TL;DR
-1. Download flat/mask from the Supporting Materials: [SM repo](https://github.com/ysBach/nicpolpy_sag22sm)
-2. $ pip install NICpolpy
+1. On terminal: ``$ pip install NICpolpy``
+1. Download flat/mask from the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm).
 
-* Practical usage: [SM repo](https://github.com/ysBach/nicpolpy_sag22sm)'s ``example/`` directory.
+* Practical usage example: [SM repo/example](https://github.com/ysBach/nicpolpy_sag22sm/tree/main/example).
 
-* Theoretical details: [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4).
+* Theoretical/implementation details: [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4).
 
 ## Citation
 Please consider the following citations:
