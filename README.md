@@ -4,19 +4,23 @@
 
  (ysbach93@gmail.com)
 
-Nishi-Harima Astronomical Observatory (NHAO)'s Near-Infrared Camera (NIC) Polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by Yoonsoo P. Bach at Seoul National University, South Korea, since late 2019.
+ℹ️ For the most recent documentation, please always refer to [GitHub](https://github.com/ysBach/NICpolpy).
+
+## What is this?
+NHAO (Nishi-Harima Astronomical Observatory) has NIC (Near-Infrared Camera). On top of imaging mode, NIC has a three-filter (JHKs) simultaneous dual-beam polarimetric mode. This package is for the polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by @ysBach since late 2019.
 
 ## TL;DR
 1. On terminal: ``$ pip install NICpolpy``
 1. Download flat/mask from the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm).
 
+Then refer to:
 * Practical usage example: [SM repo/example](https://github.com/ysBach/nicpolpy_sag22sm/tree/main/example).
-
 * Theoretical/implementation details: [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4).
 
-## Citation
-Please consider the following citations:
-BibTeX:
+## Citation ✅
+Please consider one or both of the following citation(s) (BibTeX):
+
+1. ``NICpolpy`` Zenodo (when you just want to mention which package was used).
 ```
 @software{nicpolpy_v013,
   author       = {Yoonsoo P. Bach},
@@ -28,29 +32,39 @@ BibTeX:
   doi          = {10.5281/zenodo.7391454},
   url          = {https://doi.org/10.5281/zenodo.7391454}
 }
-@ARTICLE{Bach+22SAG,
-       author = {{Bach}, Y. P. and {Ishiguro}, M. and {Takahashi}, J. and {Geem}, J.},
-        title = "{Data Reduction Pipeline for the NIC Polarimetry Mode in Python, NICPolpy}",
-      journal = {Stars and Galaxies},
+```
+2. The implementation details document ([SAG official website](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4), peer-reviewed, non-SCI)
+```
+@ARTICLE{2022arXiv221214167B,
+       author = {{Bach}, Yoonsoo P. and {Ishiguro}, Masateru and {Takahashi}, Jun and {Geem}, Jooyeon},
+        title = "{Data Reduction Process and Pipeline for the NIC Polarimetry Mode in Python, NICpolpy}",
+      journal = {arXiv e-prints},
+     keywords = {Astrophysics - Instrumentation and Methods for Astrophysics},
          year = 2022,
         month = dec,
-          eid = {arXiv:},
-        pages = {arXiv:},
+          eid = {arXiv:2212.14167},
+        pages = {arXiv:2212.14167},
 archivePrefix = {arXiv},
-       eprint = {},
- primaryClass = {astro-ph.EP},
-       volume = {5},
-       number = {4},
-        pages = {1-18},
+       eprint = {2212.14167},
+ primaryClass = {astro-ph.IM},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2022arXiv221214167B},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
-(First: ``NICpolpy`` Zenodo // Second: Implementation details document)
 
+-----
+-----
+**DETAILS**:
+
+-----
+-----
 
 ## 1. Installation
 To use this package, you need to have the pre-made master flat and initial mask frames. They are downloadable at the [SM repo](https://github.com/ysBach/nicpolpy_sag22sm). There, you can also find the example usage of ``NICpolpy``.
 
-You will need Python **3.7** (recommended: **3.10+**, [Anaconda 3](https://www.anaconda.com/distribution/#download-section)). You also need the following packages:
+Requirements:
+* Python **3.7+** (recommended: **3.10**)
+  * You may use [Anaconda 3](https://www.anaconda.com/distribution/#download-section).
 * numpy
 * scipy
 * bottleneck
@@ -128,3 +142,7 @@ After reduction, you may freely remove LV1 and 2 data to save your storage. They
 - ``logs/``: 12.8 MB (MFLAT) + 3.3 MB (IMASK) + [~ 15 MB/DARK_EXPTIME] + [~3.3 MB/DARKMASK] + something more...
 In total, the log directory (by default ``__logs/``) will be likely \~ 50 MB. For 10-set observation at NIC, i.e., 40 frames per filter = 120 FITS frames, will have LV0 \~ LV1 \~ LV2 \~ 0.5 GB, LV3 \~ LV4 \~ 0.1 GB thus in total, <\~ 2 GB.
 
+
+# TODO
+* Refactor ``ysfitsutilpy`` and ``ysphotutilpy``
+  * Currently, ``NICpolpy`` contains a snapshot of ``ysfitsutilpy`` and ``ysphotutilpy``, which is an undesirable way (especially because of the other package dependency). If there is a critical need for significantly updating NICpolpy in the future, I may re-implement these.
