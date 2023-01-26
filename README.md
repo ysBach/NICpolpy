@@ -7,7 +7,7 @@
 ℹ️ For the most recent documentation, please always refer to [GitHub](https://github.com/ysBach/NICpolpy).
 
 ## What is this?
-NHAO (Nishi-Harima Astronomical Observatory) has NIC (Near-Infrared Camera). On top of imaging mode, NIC has a three-filter (JHKs) simultaneous dual-beam polarimetric mode. This package is for the polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by @ysBach since late 2019.
+NHAO (Nishi-Harima Astronomical Observatory) has NIC (Near-Infrared Camera). On top of imaging mode, NIC has a three-filter (JHKs) simultaneous dual-beam polarimetric mode. This package is for the polarimetric mode data reduction pipeline (image preprocessing, excluding photometry at the moment). Under-development by @ysBach since late 2019...
 
 ## TL;DR
 1. On terminal: ``$ pip install NICpolpy``
@@ -35,20 +35,20 @@ Please consider one or both of the following citation(s) (BibTeX):
 ```
 2. The implementation details document ([SAG official website](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4), peer-reviewed, non-SCI)
 ```
-@ARTICLE{2022arXiv221214167B,
+@ARTICLE{2022_SAG_NICpolpy,
        author = {{Bach}, Yoonsoo P. and {Ishiguro}, Masateru and {Takahashi}, Jun and {Geem}, Jooyeon},
         title = "{Data Reduction Process and Pipeline for the NIC Polarimetry Mode in Python, NICpolpy}",
-      journal = {arXiv e-prints},
-     keywords = {Astrophysics - Instrumentation and Methods for Astrophysics},
+      journal = {Stars and Galaxies},
+     keywords = {methods: data analysis, methods: observational, techniques: image processing, techniques: polarimetric},
          year = 2022,
         month = dec,
-          eid = {arXiv:2212.14167},
-        pages = {arXiv:2212.14167},
+       volume = {5},
+          eid = {4},
+        pages = {1},
 archivePrefix = {arXiv},
        eprint = {2212.14167},
  primaryClass = {astro-ph.IM},
        adsurl = {https://ui.adsabs.harvard.edu/abs/2022arXiv221214167B},
-      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
 
