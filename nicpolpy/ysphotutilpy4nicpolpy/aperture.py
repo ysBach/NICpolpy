@@ -5,10 +5,8 @@ from photutils import (CircularAnnulus, CircularAperture, EllipticalAnnulus,
                        EllipticalAperture)
 
 __all__ = ["cutout_from_ap", "ap_to_cutout_position",
-           "circ_ap_an", "ellip_ap_an", "pill_ap_an",
-           "radprof_pix",
-           "PillBoxMaskMixin", "PillBoxAperture", "PillBoxAnnulus",
-           "SkyPillBoxAperture", "SkyPillBoxAnnulus"]
+           "circ_ap_an", "ellip_ap_an",
+           "radprof_pix",]
 
 
 def cutout_from_ap(ap, ccd):
