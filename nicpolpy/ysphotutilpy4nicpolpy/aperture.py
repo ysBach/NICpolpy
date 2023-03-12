@@ -1,12 +1,12 @@
 import numpy as np
 from astropy import units as u
 from astropy.nddata import CCDData
-from photutils import (CircularAnnulus, CircularAperture, EllipticalAnnulus,
-                       EllipticalAperture)
+from photutils.aperture import (CircularAnnulus, CircularAperture, EllipticalAnnulus,
+                                EllipticalAperture)
 
 __all__ = ["cutout_from_ap", "ap_to_cutout_position",
            "circ_ap_an", "ellip_ap_an",
-           "radprof_pix",]
+           "radprof_pix", ]
 
 
 def cutout_from_ap(ap, ccd):
@@ -324,4 +324,3 @@ def radprof_an(img, pos, rmax=10, dr=1, method="center"):
     """Get radial profile (annulus average) of an object from n-D image.
     """
     pass
-
