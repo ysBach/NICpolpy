@@ -4,10 +4,11 @@ functionality can be achieved by pre-existing packages.
 """
 import numpy as np
 from astropy.modeling.fitting import LevMarLSQFitter
+from scipy.stats import t as tdist
 
 __all__ = ["sqsum", "err_prop", "_linear_unit_converter", "convert_pct", "convert_deg",
            "bezel_mask", "Gaussian2D_correct",
-           "fit_astropy_model", "fit_Gaussian2D"]
+           "fit_astropy_model", "fit_Gaussian2D", "outlier_gesd"]
 
 
 def sqsum(*args):
@@ -347,134 +348,143 @@ def fit_Gaussian2D(data, model_init, correct=True, sigma=None, fitter=LevMarLSQF
     return fitted, fitter
 
 
-'''
-from warnings import warn
-from astropy.modeling import Fittable2DModel, Parameter
-from astropy.modeling.fitting import LevMarLSQFitter
-from astropy.modeling.models import CONSTRAINTS_DOC, Const2D, Moffat2D
-from astropy.utils.exceptions import AstropyUserWarning
-
-# TODO: Elliptical moffat...
-# https://iraf.net/irafhelp.php?val=daopars&help=Help+Page
-class MoffatConst2D(Fittable2DModel):
-    """
-    A model for a 2D Moffat plus a constant.
+def outliers_gesd(
+        x: list | np.ndarray,
+        outliers: int = 5,
+        hypo: bool = False,
+        report: bool = False,
+        alpha: float = 0.05) -> np.ndarray:
+    """ Directly from https://github.com/maximtrp/scikit-posthocs/pull/56
+    The generalized (Extreme Studentized Deviate) ESD test is used
+    to detect one or more outliers in a univariate data set that follows
+    an approximately normal distribution [1]_.
 
     Parameters
     ----------
-    constant : float
-        Value of the constant.
-    amplitude : float
-        Amplitude of the model.
-    x_0 : float
-        x position of the maximum of the Moffat model.
-    y_0 : float
-        y position of the maximum of the Moffat model.
-    gamma : float
-        Core width of the Moffat model.
-    alpha : float
-        Power index of the Moffat model.
-    """
-
-    constant = Parameter(default=1)
-    amplitude = Parameter(default=1)
-    x_0 = Parameter(default=0)
-    y_0 = Parameter(default=0)
-    gamma = Parameter(default=1)
-    alpha = Parameter(default=1)
-
-    @staticmethod
-    def evaluate(x, y, constant, amplitude, x_0, y_0, gamma, alpha):
-        """Two dimensional Gaussian plus constant function."""
-
-        model = Const2D(constant)(x, y) + Moffat2D(amplitude, x_0, y_0,
-                                                   gamma, alpha)(x, y)
-        return model
-
-
-MoffatConst2D.__doc__ += CONSTRAINTS_DOC
-
-
-def fit_2dmoffat(data, error=None, mask=None):
-    """
-    Fit a 2D Moffat plus a constant to a 2D image.
-
-    Invalid values (e.g. NaNs or infs) in the ``data`` or ``error``
-    arrays are automatically masked.  The mask for invalid values
-    represents the combination of the invalid-value masks for the
-    ``data`` and ``error`` arrays.
-
-    Parameters
-    ----------
-    data : array_like
-        The 2D array of the image.
-
-    error : array_like, optional
-        The 2D array of the 1-sigma errors of the input ``data``.
-
-    mask : array_like (bool), optional
-        A boolean mask, with the same shape as ``data``, where a `True`
-        value indicates the corresponding element of ``data`` is masked.
+    x : Union[List, np.ndarray]
+        An array, any object exposing the array interface, containing
+        data to test for outliers.
+    outliers : int = 5
+        Number of potential outliers to test for. Test is two-tailed, i.e.
+        maximum and minimum values are checked for potential outliers.
+    hypo : bool = False
+        Specifies whether to return a bool value of a hypothesis test result.
+        Returns True when we can reject the null hypothesis. Otherwise, False.
+        Available options are:
+        1) True - return a hypothesis test result.
+        2) False - return a filtered array without an outlier (default).
+    report : bool = False
+        Specifies whether to print a summary table of the test.
+    alpha : float = 0.05
+        Significance level for a hypothesis test.
 
     Returns
     -------
-    result : A `MoffatConst2D` model instance.
-        The best-fitting Moffat 2D model.
+    np.ndarray
+        Returns the filtered array if alternative hypo is True, otherwise an
+        unfiltered (input) array.
+
+    Notes
+    -----
+    .. [1] Rosner, Bernard (May 1983), Percentage Points for a Generalized
+        ESD Many-Outlier Procedure,Technometrics, 25(2), pp. 165-172.
+
+    Examples
+    --------
+    >>> data = np.array([-0.25, 0.68, 0.94, 1.15, 1.2, 1.26, 1.26, 1.34,
+        1.38, 1.43, 1.49, 1.49, 1.55, 1.56, 1.58, 1.65, 1.69, 1.7, 1.76,
+        1.77, 1.81, 1.91, 1.94, 1.96, 1.99, 2.06, 2.09, 2.1, 2.14, 2.15,
+        2.23, 2.24, 2.26, 2.35, 2.37, 2.4, 2.47, 2.54, 2.62, 2.64, 2.9,
+        2.92, 2.92, 2.93, 3.21, 3.26, 3.3, 3.59, 3.68, 4.3, 4.64, 5.34,
+        5.42, 6.01])
+    >>> outliers_gesd(data, 5)
+    array([-0.25,  0.68,  0.94,  1.15,  1.2 ,  1.26,  1.26,  1.34,  1.38,
+            1.43,  1.49,  1.49,  1.55,  1.56,  1.58,  1.65,  1.69,  1.7 ,
+            1.76,  1.77,  1.81,  1.91,  1.94,  1.96,  1.99,  2.06,  2.09,
+            2.1 ,  2.14,  2.15,  2.23,  2.24,  2.26,  2.35,  2.37,  2.4 ,
+            2.47,  2.54,  2.62,  2.64,  2.9 ,  2.92,  2.92,  2.93,  3.21,
+            3.26,  3.3 ,  3.59,  3.68,  4.3 ,  4.64])
+    >>> outliers_gesd(data, outliers = 5, report = True)
+    H0: no outliers in the data
+    Ha: up to 5 outliers in the data
+    Significance level:  α = 0.05
+    Reject H0 if Ri > Critical Value (λi)
+    Summary Table for Two-Tailed Test
+    ---------------------------------------
+          Exact           Test     Critical
+      Number of      Statistic    Value, λi
+    Outliers, i      Value, Ri          5 %
+    ---------------------------------------
+              1          3.119        3.159
+              2          2.943        3.151
+              3          3.179        3.144 *
+              4           2.81        3.136
+              5          2.816        3.128
     """
+    rs, ls = np.zeros(outliers, dtype=float), np.zeros(outliers, dtype=float)
+    ms = []
 
-    from ..morphology import data_properties  # prevent circular imports
+    data_proc = np.copy(x)
+    argsort_index = np.argsort(data_proc)
+    data = data_proc[argsort_index]
+    n = data_proc.size
 
-    data = np.ma.asanyarray(data)
+    # Lambda values (critical values): do not depend on the outliers.
+    nol = np.arange(outliers)  # the number of outliers
+    df = n - nol - 2  # degrees of freedom
+    t_ppr = tdist.ppf(1 - alpha / (2 * (n - nol)), df)
+    ls = ((n - nol - 1) * t_ppr) / np.sqrt((df + t_ppr**2) * (n - nol))
 
-    if mask is not None and mask is not np.ma.nomask:
-        mask = np.asanyarray(mask)
-        if data.shape != mask.shape:
-            raise ValueError('data and mask must have the same shape.')
-        data.mask |= mask
+    for i in np.arange(outliers):
 
-    if np.any(~np.isfinite(data)):
-        data = np.ma.masked_invalid(data)
-        warn('Input data contains input values (e.g. NaNs or infs), '
-             'which were automatically masked.', AstropyUserWarning)
+        abs_d = np.abs(data_proc - np.mean(data_proc))
 
-    if error is not None:
-        error = np.ma.masked_invalid(error)
-        if data.shape != error.shape:
-            raise ValueError('data and error must have the same shape.')
-        data.mask |= error.mask
-        weights = 1.0 / error.clip(min=1.e-30)
-    else:
-        weights = np.ones(data.shape)
+        # R-value calculation
+        R = np.max(abs_d) / np.std(data_proc, ddof=1)
+        rs[i] = R
 
-    if np.ma.count(data) < 7:
-        raise ValueError('Input data must have a least 7 unmasked values to '
-                         'fit a 2D Moffat plus a constant.')
+        # Masked values
+        lms = ms[-1] if len(ms) > 0 else []
+        ms.append(
+            lms + np.where(data == data_proc[np.argmax(abs_d)])[0].tolist())
 
-    # assign zero weight to masked pixels
-    if data.mask is not np.ma.nomask:
-        weights[data.mask] = 0.
+        # Remove the observation that maximizes |xi − xmean|
+        data_proc = np.delete(data_proc, np.argmax(abs_d))
 
-    mask = data.mask
-    data.fill_value = 0.0
-    data = data.filled()
+    if report:
 
-    # Subtract the minimum of the data as a crude background estimate.
-    # This will also make the data values positive, preventing issues with
-    # the moment estimation in data_properties (moments from negative data
-    # values can yield undefined Gaussian parameters, e.g. x/y_stddev).
-    props = data_properties(data - np.min(data), mask=mask)
+        report = ["H0: no outliers in the data",
+                  "Ha: up to " + str(outliers) + " outliers in the data",
+                  "Significance level:  α = " + str(alpha),
+                  "Reject H0 if Ri > Critical Value (λi)", "",
+                  "Summary Table for Two-Tailed Test",
+                  "---------------------------------------",
+                  "      Exact           Test     Critical",
+                  "  Number of      Statistic    Value, λi",
+                  "Outliers, i      Value, Ri      {:5.3g} %".format(100*alpha),
+                  "---------------------------------------"]
 
-    init_const = 0.  # subtracted data minimum above
-    init_amplitude = np.ptp(data)
-    g_init = GaussianConst2D(constant=init_const, amplitude=init_amplitude,
-                             x_mean=props.xcentroid.value,
-                             y_mean=props.ycentroid.value,
-                             x_stddev=props.semimajor_axis_sigma.value,
-                             y_stddev=props.semiminor_axis_sigma.value,
-                             theta=props.orientation.value)
-    fitter = LevMarLSQFitter()
-    y, x = np.indices(data.shape)
-    gfit = fitter(g_init, x, y, data, weights=weights)
+        for i, (r, l) in enumerate(zip(rs, ls)):
+            report.append('{: >11s}'.format(str(i+1)) +
+                          '{: >15s}'.format(str(np.round(r, 3))) +
+                          '{: >13s}'.format(str(np.round(l, 3))) +
+                          (" *" if r > l else ""))
 
-    return gfit
-'''
+        print("\n".join(report))
+
+    # Remove masked values
+    # for which the test statistic is greater
+    # than the critical value and return the result
+
+    if any(rs > ls):
+        if hypo:
+            data[:] = False
+            data[ms[np.max(np.where(rs > ls))]] = True
+            # rearrange data so mask is in same order as incoming data
+            data = np.vstack((data, np.arange(0, data.shape[0])[argsort_index]))
+            data = data[0, data.argsort()[1, ]]
+            data = data.astype('bool')
+        else:
+            data = np.delete(data, ms[np.max(np.where(rs > ls))])
+
+    return data
