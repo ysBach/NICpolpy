@@ -38,7 +38,7 @@ __all__ = ["iterator",
            "summary_nic", "zscale_lims", "norm_imshow", "vrange_sigc", "colorbaring",
            "thumb_with_stat", "thumb_with_satpix",
            "plot_nightly_check_fig",
-           "outlier_gesd"
+           "outliers_gesd"
            ]
 
 
