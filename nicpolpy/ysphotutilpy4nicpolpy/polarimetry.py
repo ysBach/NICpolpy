@@ -456,7 +456,7 @@ def calc_pol_r(
     cos2r = np.cos(2*thr)
     sin2r = np.sin(2*thr)
     polr = pol*cos2r
-    dpolr = err_prop(dpol*cos2r, pol*(-2*sin2r)*dthp)
+    dpolr = np.max([err_prop(dpol*cos2r, pol*(-2*sin2r)*dthp), dpol], axis=0)
     dthr = err_prop(dthp, dsuntargetpa)
     polr, dpolr = convert_pct(polr, dpolr, already=False, convert2unit=out_pct)
     thr, dthr = convert_deg(thr, dthr, already=False, convert2unit=out_deg)
