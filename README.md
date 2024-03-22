@@ -15,7 +15,7 @@ NHAO (Nishi-Harima Astronomical Observatory) has NIC (Near-Infrared Camera). On 
 
 Then refer to:
 * Practical usage example: [SM repo/example](https://github.com/ysBach/nicpolpy_sag22sm/tree/main/example).
-* Theoretical/implementation details: [Bach Y. et al. (2022) StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B).
+* Theoretical/implementation details: [Bach et al. (2022) StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B).
   * About StGal Journal: [Hyogo U.](http://www.nhao.jp/en/research/StarsAndGalaxies.html)
 
 ## Citation ✅
@@ -34,7 +34,7 @@ Please consider one or both of the following citation(s) (BibTeX):
   url          = {https://doi.org/10.5281/zenodo.7391454}
 }
 ```
-2. The implementation details document ([BachYP+22 StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B), peer-reviewed, non-SCI)
+2. The implementation details document ([Bach+22 StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B), peer-reviewed, non-SCI)
 ```
 @ARTICLE{2022StGal...5....4B,
        author = {{Bach}, Yoonsoo and {Ishiguro}, Masateru and {Takahashi}, Jun and {Geem}, Jooyeon},
