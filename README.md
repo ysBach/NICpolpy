@@ -15,7 +15,8 @@ NHAO (Nishi-Harima Astronomical Observatory) has NIC (Near-Infrared Camera). On 
 
 Then refer to:
 * Practical usage example: [SM repo/example](https://github.com/ysBach/nicpolpy_sag22sm/tree/main/example).
-* Theoretical/implementation details: [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4).
+* Theoretical/implementation details: [Bach Y. et al. (2022) StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B).
+  * About StGal Journal: [Hyogo U.](http://www.nhao.jp/en/research/StarsAndGalaxies.html)
 
 ## Citation ✅
 Please consider one or both of the following citation(s) (BibTeX):
@@ -33,22 +34,23 @@ Please consider one or both of the following citation(s) (BibTeX):
   url          = {https://doi.org/10.5281/zenodo.7391454}
 }
 ```
-2. The implementation details document ([SAG official website](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4), peer-reviewed, non-SCI)
+2. The implementation details document ([BachYP+22 StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B), peer-reviewed, non-SCI)
 ```
-@ARTICLE{2022_SAG_NICpolpy,
-       author = {{Bach}, Yoonsoo P. and {Ishiguro}, Masateru and {Takahashi}, Jun and {Geem}, Jooyeon},
+@ARTICLE{2022StGal...5....4B,
+       author = {{Bach}, Yoonsoo and {Ishiguro}, Masateru and {Takahashi}, Jun and {Geem}, Jooyeon},
         title = "{Data Reduction Process and Pipeline for the NIC Polarimetry Mode in Python, NICpolpy}",
-      journal = {Stars and Galaxies (arXiv:2212.14167)},
-     keywords = {methods: data analysis, methods: observational, techniques: image processing, techniques: polarimetric},
+      journal = {Stars and Galaxies},
+     keywords = {Astrophysics - Instrumentation and Methods for Astrophysics},
          year = 2022,
         month = dec,
        volume = {5},
-          eid = {4},
         pages = {4},
+          doi = {10.32231/starsandgalaxies.5.0_4},
 archivePrefix = {arXiv},
        eprint = {2212.14167},
  primaryClass = {astro-ph.IM},
-       adsurl = {https://ui.adsabs.harvard.edu/abs/2022arXiv221214167B},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
 
@@ -91,7 +93,7 @@ pip install nicpolpy
 ```
 
 ## 2. Descriptions
-For detailed descriptions about image reduction steps, please refer to [Bach Y. P. et al. (2022) SAG](http://www.nhao.jp/research/starsandgalaxies/05.html#2022J-4). Below are simple summary of that publication.
+For detailed descriptions about image reduction steps, please refer to [Bach Y. et al. (2022) StGal](https://ui.adsabs.harvard.edu/abs/2022StGal...5....4B). Below are simple summary of that publication.
 
 ### 1-1. A Short Note
 Few things special for NHAO NIC polarimetric mode:
