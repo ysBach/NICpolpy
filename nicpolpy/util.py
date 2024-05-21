@@ -150,6 +150,8 @@ def OBJSECTS(right_half=False):
 
 
 def OBJSLICES(right_half=False):
+    # Takes < 0.1ms, so even for 1000 images it's < 0.1s.
+    # That's why I did not set it as completely static.
     # OBJSLICES()[0/1] = o-/e-ray,
     # OBJSLICES()[0][0/1] = o-ray, axis 0/1 (y-axis/x-axis)
     return _fits2sl(OBJSECTS(right_half))
