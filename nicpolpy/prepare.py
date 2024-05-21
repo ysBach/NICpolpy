@@ -8,6 +8,7 @@ and minor modifications to the header (including DATE-OBS, COUNTER, etc).
 
 import time
 from pathlib import Path
+from warnings import warn
 
 import astropy
 import numpy as np
@@ -19,8 +20,7 @@ from astropy.time import Time
 from .util import (BPM_KW, GAIN, HDR_KEYS, NIC_CRREJ_KEYS, OBJSLICES, RDNOISE,
                    VERTICALSECTS, _load_as_dict, _sanitize_fits, _save,
                    _save_or_load_summary, _select_summary_rows, _set_dir_iol,
-                   _summary_path_parse, add_maxsat,
-                   infer_filter, iterator)
+                   _summary_path_parse, add_maxsat, infer_filter, iterator)
 from .ysfitsutilpy4nicpolpy import (CCDData_astype, _parse_data_header,
                                     cmt2hdr, crrej, fixpix, imslice, load_ccd,
                                     medfilt_bpm, slicefy, update_process)
@@ -45,6 +45,9 @@ try:
         return irfft(amp_comp_transpose).T
 
 except ImportError:
+    warn("rocket_fft is not installed. Using numpy for FFT. "
+         "Installing rocket_fft on top of numba will boost fourier pattern removal (lv2).")
+
     def get_fft_pattern(x, cut_wavelength):
         amp_comp = np.fft.rfft(x, axis=0)
         amp_comp[cut_wavelength:, :] = 0
