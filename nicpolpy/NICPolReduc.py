@@ -51,7 +51,7 @@ def sigma_clipped_med(data, **kwargs):
     return sigma_clipped_stats(data, **kwargs)[1]
 
 
-def _save_thumb_with_stat(df, outdir, verbose=0, show_progress=True, **kwargs):
+def _save_thumb_with_stat(df, outdir, verbose=1, show_progress=True, **kwargs):
     if verbose >= 1:
         print(f"Saving thumbnails to {outdir}")
     for _, row in iterator(df.iterrows(), show_progress=show_progress):
@@ -61,7 +61,7 @@ def _save_thumb_with_stat(df, outdir, verbose=0, show_progress=True, **kwargs):
 
 
 def _save_thumb_with_satpix(
-    df, masks, outdir, basename, verbose=0, show_progress=True, **kwargs
+    df, masks, outdir, basename, verbose=1, show_progress=True, **kwargs
 ):
     if verbose >= 1:
         print(f"Saving thumbnails to {outdir}")
@@ -683,6 +683,7 @@ class NICPolReduc(NICPolReducMixin):
         maxnsat_qu=10,
         thumb_kw=dict(
             ext="pdf",
+            verbose=1,
             dpi=72,
             gap_value=-100,
             bezels=((20, 20), (20, 20)),
@@ -804,6 +805,7 @@ class NICPolReduc(NICPolReducMixin):
         thumb_kw=dict(
             ext="pdf",
             dpi=72,
+            verbose=1,
             gap_value=-100,
             bezels=((20, 20), (20, 20)),
             figsize=(5.5, 3),
