@@ -224,8 +224,8 @@ def fourier_lrsub(
         nccd.data[sl_r_oe] -= pattern_pure
 
     _t = Time.now()
-    amp_comp = np.fft.rfft(ccd_l.data, axis=0)
-    amp_comp[cut_wavelength:, :] = 0
+    # amp_comp = np.fft.rfft(ccd_l.data, axis=0)
+    # amp_comp[cut_wavelength:, :] = 0
     # pattern_pure = np.fft.irfft(amp_comp, axis=0)
     # pattern = np.tile(pattern_pure, 2)
     # nccd.data = nccd.data - pattern
