@@ -15,14 +15,40 @@ import pandas as pd
 from astropy.nddata import CCDData
 from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
-from .ysfitsutilpy4nicpolpy import (CCDData_astype, _parse_data_header, cmt2hdr, crrej,
-                                    slicefy, fixpix, load_ccd, medfilt_bpm, imslice,
-                                    update_process)
 
 from .util import (BPM_KW, GAIN, HDR_KEYS, NIC_CRREJ_KEYS, OBJSLICES, RDNOISE,
                    VERTICALSECTS, _load_as_dict, _sanitize_fits, _save,
                    _save_or_load_summary, _select_summary_rows, _set_dir_iol,
-                   _summary_path_parse, add_maxsat, infer_filter, iterator, _set_fstem_proc)
+                   _summary_path_parse, add_maxsat,
+                   infer_filter, iterator)
+from .ysfitsutilpy4nicpolpy import (CCDData_astype, _parse_data_header,
+                                    cmt2hdr, crrej, fixpix, imslice, load_ccd,
+                                    medfilt_bpm, slicefy, update_process)
+
+try:
+    import numba as nb
+    import rocket_fft  # to check if it's installed
+
+    @nb.njit(cache=True)
+    def rfft(x):
+        return np.fft.rfft(x)
+
+    @nb.njit(cache=True)
+    def irfft(x):
+        return np.fft.irfft(x)
+
+    def get_fft_pattern(x, cut_wavelength):
+        amp_comp_transpose = rfft(x.T.astype(np.float64))
+        # Doing above is ~10% quicker than using `for nb.prange(x.shape[1]):`
+        # and then `rfft(x[:, i]`.
+        amp_comp_transpose[:, cut_wavelength:] = 0  # Note: transposed axis
+        return irfft(amp_comp_transpose).T
+
+except ImportError:
+    def get_fft_pattern(x, cut_wavelength):
+        amp_comp = np.fft.rfft(x, axis=0)
+        amp_comp[cut_wavelength:, :] = 0
+        return np.fft.irfft(amp_comp, axis=0)
 
 __all__ = [
     "fixpix_leftonly_verti_strip", "fixpix_oe",
@@ -193,9 +219,7 @@ def fourier_lrsub(
         # ^ Do as if we're processing the right half of the image.
         sl_r_oe = (slice(None, None, None), OBJSLICES(False)[filt][i][1])
         # ^ The true right part of the frames.
-        amp_comp = np.fft.rfft(nccd.data[sl_l_oe], axis=0)
-        amp_comp[cut_wavelength:, :] = 0
-        pattern_pure = np.fft.irfft(amp_comp, axis=0)
+        pattern_pure = get_fft_pattern(nccd.data[sl_l_oe], cut_wavelength)
         nccd.data[sl_l_oe] -= pattern_pure
         nccd.data[sl_r_oe] -= pattern_pure
 
