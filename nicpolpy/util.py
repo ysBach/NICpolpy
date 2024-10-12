@@ -319,7 +319,7 @@ def add_maxsat(ccd, mmaskpath, npixs=(5, 5), bezels=((20, 20), (20, 20)), verbos
     if mmaskpath is not None:
         mask = load_ccd(mmaskpath, ccddata=False)
     else:
-        mask = np.zeros(ccd.data.shape, dtype=np.bool)
+        mask = np.zeros(ccd.data.shape, dtype=bool)
 
     satlevel = SATLEVEL[filt.upper()]
     kw = dict(bezels=bezels, update_header=False, verbose=verbose)
