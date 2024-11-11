@@ -4,8 +4,14 @@ import numpy as np
 from astropy import units as u
 from astropy.nddata import CCDData
 from astropy.table import QTable
-from photutils import aperture_photometry
-from photutils.aperture import Aperture
+try:
+    # V 2.0+ of photutils. Maybe it should work for older versions too???
+    from photutils.aperture import Aperture, aperture_photometry
+except ImportError:
+    # Just in case the above does not work...
+    from photutils import aperture_photometry
+    from photutils.aperture import Aperture
+
 
 from .background import sky_fit
 
