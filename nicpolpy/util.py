@@ -1194,7 +1194,7 @@ def thumb_with_satpix(
                     satlevel=SATLEVEL[filt],
                     bezels=bezels
                 )
-                nsatpix_oe = np .sum(satpix_oe)
+                nsatpix_oe = np.sum(satpix_oe)
                 zmin, zmax = zscale_lims(img_oe, zscale_bezels=bezels)
                 i_beg = (2*i + j)*(nx + 1)
                 i_end = (2*i + j + 1)*(nx + 1) - 1
@@ -1212,8 +1212,9 @@ def thumb_with_satpix(
         fig, ax = plt.subplots(1, 1, figsize=figsize)
         ax.imshow(data, origin="lower", vmin=0, vmax=1)
         ax.plot(satupos[1], satupos[0], "r+")
+        polaglstr = polagl if isinstance(polagl, str) else f"{polagl:.1f}°"
         ax.set_title(
-            f"{int(counter):04d} ({objname:s} {setid:s} {polagl:.1f}˚)\n"
+            f"{int(counter):04d} ({objname:s} {setid:s} {polaglstr:s})\n"
             + "Each img ZSCALE'd. Order: {}\n".format(", ".join(title))
             + f"# of saturated pix excluding MMASK: {nsats}",
             fontsize=8,
