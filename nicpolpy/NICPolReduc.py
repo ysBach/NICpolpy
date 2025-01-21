@@ -578,7 +578,7 @@ class NICPolReduc(NICPolReducMixin):
 
     def comb_mmask(
         self,
-        combine_kw=dict(combine="sum", reject=None),
+        combine_kw=dict(combine="or", reject=None),
         thumb_kw=dict(ext="pdf", dpi=72, vmin=0, vmax=1),
     ):
         if (loaded := self._check_skip("red", "mmask")) is not None:
