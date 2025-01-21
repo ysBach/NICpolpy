@@ -35,6 +35,7 @@ def make_cal(
         skip_if_exists=True,
         verbose=1
 ):
+    # Find files without REMOVEIT flag
     df = plan_in.loc[plan_in[removeit] == 0].copy()
     if len(df) == 0:
         if verbose >= 1:

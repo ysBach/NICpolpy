@@ -1154,6 +1154,51 @@ def thumb_with_satpix(
         dpi=72,
         show_progress=True
 ):
+    """
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The DataFrame containing the summary of the images.
+
+    masks : dict, `None`, optional
+        The dictionary containing the masks for each filter.
+
+    outdir : str, path-like
+        The directory to save the thumbnail images.
+
+    basename : str
+        The basename of the thumbnail images.
+
+    skip_if_exists : bool, optional
+        If `True`, the thumbnail image will not be drawn if the output file
+        already exists.
+        Default is `True`.
+
+    figsize : tuple, optional
+        The size of the figure.
+        Default is (5.5, 3).
+
+    gap_value : int, optional
+        The value to fill the gap between the images (o-/e-ray).
+        Default is -100.
+
+    bezels : tuple, optional
+        The bezels for the zscale limits calculation.
+        Default is ((20, 20), (20, 20)).
+
+    ext : str, optional
+        The extension of the output thumbnail images.
+        Default is 'pdf'.
+
+    dpi : int, optional
+        The DPI of the output thumbnail images.
+        Default is 72.
+
+    show_progress : bool, optional
+        If `True`, the progress bar will be shown.
+        Default is `True`.
+
+    """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -1177,6 +1222,7 @@ def thumb_with_satpix(
         outpath = outdir/(f"{basename}_{counter:04d}_{objname:s}_{setid}.{ext}")
         do_not_draw = (skip_if_exists and Path(outpath).exists())
         data = gap_value * np.ones((ny, 6*(nx + 1)))
+        # TODO: Actually I can use satupos = [] and satupos.append(np.wherer(satpix_oe))
         satu = np.zeros((ny, 6*(nx + 1)))
         nsats = []
         title = []
@@ -1196,8 +1242,8 @@ def thumb_with_satpix(
                 )
                 nsatpix_oe = np.sum(satpix_oe)
                 zmin, zmax = zscale_lims(img_oe, zscale_bezels=bezels)
-                i_beg = (2*i + j)*(nx + 1)
-                i_end = (2*i + j + 1)*(nx + 1) - 1
+                i_beg = (2*i + j)*(nx + 1)  # left of <filt><oe> image
+                i_end = (2*i + j + 1)*(nx + 1) - 1  # right of <filt><oe> image
                 data[:, i_beg:i_end] = (img_oe - zmin)/(zmax - zmin)
                 satu[:, i_beg:i_end] = satpix_oe
                 nsats.append(nsatpix_oe)

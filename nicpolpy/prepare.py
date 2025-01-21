@@ -1258,22 +1258,26 @@ def make_darkmask(fpath, output=None, thresh=(-10, 50), percentile=(0.01, 99.99)
     ptmin = np.min(percentile)
     ptmax = np.max(percentile)
     _pt = np.percentile(_darkmask.data, [ptmin, ptmax])
-    _darkmask.data = ((_darkmask.data > thmax)*(2**1) + (_darkmask.data > _pt[1])*(2**2)
-                      + (_darkmask.data < thmin)*(2**3) + (_darkmask.data < _pt[0])*(2**4))
+    _darkmask.data = (
+        (_darkmask.data > thmax)*(2**1)
+        + (_darkmask.data > _pt[1])*(2**2)
+        + (_darkmask.data < thmin)*(2**3)
+        + (_darkmask.data < _pt[0])*(2**4)
+    )
     _darkmask = CCDData_astype(_darkmask, "uint8")
     _darkmask.header["OBJECT"] = "DARKMASK"
     _darkmask.header.set("DKTHMIN", thmin, "dark threshold min (code 2**1)")
     _darkmask.header.set("DKTHMAX", thmax, "dark threshold max (code 2**2)")
     _darkmask.header.set("DKPTMIN", ptmin, "dark percentile min (code 2**3)")
     _darkmask.header.set("DKPTMAX", ptmax, "dark percentile max (code 2**4)")
-    cmt2hdr(
-        _darkmask.header, "c",
-        ("Mask values mean: 00000010 = 2**1: dark above upper threshold; "
-            + "00000100 = 2**2: dark above upper percentile; "
-            + "00001000 = 2**3: dark below lower threshold; "
-            + "00010000 = 2**4: dark below lower percentile; "
-            + "Refer to DKTHMIN, DKTHMAX, DKPTMIN, DKPTMAX.")
-    )
+    cmt2hdr(_darkmask.header, "c", "Mask values means :: ")
+    cmt2hdr(_darkmask.header, "c", "  * 00000001 = 2**0: Original input mask;")
+    cmt2hdr(_darkmask.header, "c", "  * 00000010 = 2**1: dark above upper threshold;")
+    cmt2hdr(_darkmask.header, "c", "  * 00000100 = 2**2: dark above upper percentile;")
+    cmt2hdr(_darkmask.header, "c", "  * 00001000 = 2**3: dark below lower threshold;")
+    cmt2hdr(_darkmask.header, "c", "  * 00010000 = 2**4: dark below lower percentile.")
+    cmt2hdr(_darkmask.header, "c", "(Refer to DKTHMIN, DKTHMAX, DKPTMIN, DKPTMAX)")
+
     if output is not None:
         output = Path(output)
         output.parent.mkdir(exist_ok=True, parents=True)
