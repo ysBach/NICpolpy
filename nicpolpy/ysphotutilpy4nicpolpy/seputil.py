@@ -121,7 +121,7 @@ sep_default_kernel = np.array([[1.0, 2.0, 1.0],
 
 def _sanitize_byteorder(data):
     if data.dtype.byteorder == '>':
-        return data.byteswap().newbyteorder()
+        return data.byteswap().view(data.dtype.newbyteorder())
     else:
         return data
 
@@ -397,7 +397,7 @@ def sep_extract(
     if bkg is None:
         data_skysub = data
         # No need to further update `var` or `err`.
-    elif isinstance(bkg, (int, float, np.ndarray)):
+    elif isinstance(bkg, (int, float, np.ndarray, np.float32)):
         data_skysub = data - bkg
         # No need to further update `var` or `err`.
     else:
