@@ -436,6 +436,7 @@ class NICPolReduc(NICPolReducMixin):
         method="median",
         sigclip_kw=dict(sigma=2, maxiters=5),
         fitting_sections=None,
+        dateobs_by_telinfo=False,
         show_progress=True,
         thumb_kw=dict(ext="pdf", dpi=72, zscale=True, percentiles=[0.01, 99.9, 99.99]),
     ):
@@ -491,6 +492,7 @@ class NICPolReduc(NICPolReducMixin):
                 method=method,
                 sigclip_kw=sigclip_kw,
                 fitting_sections=fitting_sections,
+                dateobs_by_telinfo=dateobs_by_telinfo,
                 dtype="float32",  # hard-coded
                 multi2for_int16=False,  # hard-coded
                 skip_if_exists=self._skipexred[1],
@@ -617,6 +619,7 @@ class NICPolReduc(NICPolReducMixin):
         method="median",
         sigclip_kw=dict(sigma=2, maxiters=5),
         fitting_sections=None,
+        dateobs_by_telinfo=False,
         rm_nonpol=True,
         rm_test=True,
         show_progress=True,
@@ -671,6 +674,7 @@ class NICPolReduc(NICPolReducMixin):
                 dtype="float32",  # hard-coded
                 multi2for_int16=False,  # hard-coded
                 setid=row["SETID"],
+                dateobs_by_telinfo=dateobs_by_telinfo,
                 skip_if_exists=self._skipexred[1],
                 verbose=self.verbose - 2,
             )
@@ -756,6 +760,7 @@ class NICPolReduc(NICPolReducMixin):
         do_mbpm_before_fourier=True,
         cut_wavelength=100,
         vertical_again=True,
+        dateobs_by_telinfo=False,
         bpm_kw=BPM_KW,
         show_progress=True,
     ):
@@ -792,6 +797,7 @@ class NICPolReduc(NICPolReducMixin):
                 cut_wavelength=cut_wavelength,
                 bpm_kw=bpm_kw,
                 vertical_again=vertical_again,
+                dateobs_by_telinfo=dateobs_by_telinfo,
                 skip_if_exists=self._skipexred[2],
                 setid=row["SETID"],
                 verbose=self.verbose - 2,
