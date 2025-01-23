@@ -7,6 +7,7 @@ from astropy import units as u
 from astropy.nddata import CCDData
 from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
+from astropy import units as u
 from astropy.visualization import (ImageNormalize, LinearStretch,
                                    ZScaleInterval, simple_norm)
 from matplotlib import pyplot as plt
@@ -351,7 +352,7 @@ def add_maxsat(ccd, mmaskpath, npixs=(5, 5), bezels=((20, 20), (20, 20)), verbos
 # **************************************************************************************** #
 #                               HEADER, FILENAME, SANITIZERS                               #
 # **************************************************************************************** #
-def _sanitize_hdr(ccd):
+def _sanitize_hdr(ccd, dateobs_by_telinfo=False):
     # NOTE: It overwrites the existing comments of each header keyword.
     hdr = ccd.header
 
@@ -391,7 +392,15 @@ def _sanitize_hdr(ccd):
     #     hdr["COUNTER"] = (counter, "Image counter of the day, 1-indexing; 9999=TEST")
 
     # == Update DATE-OBS ================================================================= #
-    if "DATE-OBS" in hdr:
+    if dateobs_by_telinfo:
+        # When telescope time syncing was in error...
+        # Use TELINFO as a rough time
+        _time = Time(hdr["TELINFO"], format="iso") - 9*u.hour
+        hdr["DATE-OBS"] = (
+            _time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "Start of exposure (rough estimation from TELINFO)"
+        )
+    elif "DATE-OBS" in hdr:
         # "YYYY-MM-DDThh:mm:ss" has length 19
         if len(hdr["DATE-OBS"]) < 19:
             # If I add `or "T" not in hdr["DATE-OBS"]` as an additional
@@ -560,6 +569,7 @@ def _sanitize_fits(
         verbose=0,
         process_title=" Basic preprocessing start ",
         assert_almost_equal=False,
+        dateobs_by_telinfo=False,
         setid=None
 ):
     skipit = False
@@ -568,7 +578,7 @@ def _sanitize_fits(
     _t = Time.now()
 
     # == Set output stem ================================================================= #
-    _sanitize_hdr(ccd_orig)
+    _sanitize_hdr(ccd_orig, dateobs_by_telinfo=dateobs_by_telinfo)
     outstem, _ = _set_fstem(ccd_orig.header, setid=setid, proc2add=proc2add)
 
     # == Skip if conditions meet ========================================================= #

@@ -516,6 +516,7 @@ def _do_16bit_vertical(
         minval=-15000,
         blankval=-32768,
         setid=None,
+        dateobs_by_telinfo=False,
         full=False,
         save=True,
         verbose=1
@@ -563,6 +564,12 @@ def _do_16bit_vertical(
     setid : int, optional.
         The SETID value. Default: 0.
 
+    dateobs_by_telinfo : bool, optional.
+        Whether to use the ``"TELINFO"`` key in the header to update the
+        ``"DATE-OBS"`` key. This should be used when the telescope time sync
+        was in error.
+        Default: `False`.
+
     verbose : int
         Larger number means it becomes more verbose::
             * 0: print nothing
@@ -577,6 +584,7 @@ def _do_16bit_vertical(
         setid=setid,
         process_title=process_title,
         skip_if_exists=skip_if_exists,
+        dateobs_by_telinfo=dateobs_by_telinfo,
         verbose=verbose - 1,
         assert_almost_equal=True
     )
@@ -652,6 +660,7 @@ def _do_vfv(
         cut_wavelength=100,
         bpm_kw=BPM_KW,
         vertical_again=True,
+        dateobs_by_telinfo=False,
         skip_if_exists=True,
         setid=None,
         verbose=True
@@ -735,6 +744,12 @@ def _do_vfv(
         The keyword arguments for the sigma clipping for estimating the
         vertical pattern. To turn sigma-clipping off, set ``maxiters=0``.
 
+    dateobs_by_telinfo : bool, optional.
+        Whether to use the ``"TELINFO"`` key in the header to update the
+        ``"DATE-OBS"`` key. This should be used when the telescope time sync
+        was in error.
+        Default: `False`.
+
     skip_if_exists : bool, optional.
         Whether to skip all process if the file exists in `outdir`.
         Default: `True`.
@@ -765,6 +780,7 @@ def _do_vfv(
         setid=setid,
         process_title=process_title,
         skip_if_exists=skip_if_exists,
+        dateobs_by_telinfo=dateobs_by_telinfo,
         verbose=verbose,
         assert_almost_equal=False  # no need to check
     )
@@ -953,6 +969,7 @@ def proc_16_vertical(
         fitting_sections=None,
         method="median",
         skip_if_exists=True,
+        dateobs_by_telinfo=False,
         rm_nonpol=True,
         rm_test=True,
         verbose=0,
@@ -1019,6 +1036,7 @@ def proc_16_vertical(
             fitting_sections=fitting_sections,
             method=method,
             setid=setid,
+            dateobs_by_telinfo=dateobs_by_telinfo,
             verbose=verbose >= 3
         )
 
@@ -1057,6 +1075,7 @@ def proc_16_vfv(
         cut_wavelength=100,
         vertical_again=True,
         bpm_kw=BPM_KW,
+        dateobs_by_telinfo=False,
         skip_if_exists=True,
         rm_nonpol=True,
         rm_test=True,
@@ -1138,6 +1157,7 @@ def proc_16_vfv(
             vertical_again=vertical_again,
             bpm_kw=bpm_kw,
             skip_if_exists=skip_if_exists,
+            dateobs_by_telinfo=dateobs_by_telinfo,
             setid=setid,
             verbose=verbose >= 3
         )
